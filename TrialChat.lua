@@ -126,8 +126,16 @@ end
 
 local function noteActiveListener(name)
     if not name then return end
-    local isNew = activeListeners[name] == nil
-    activeListeners[name] = GetTime()
+    local normalizedName = normalizeCharacterName(name)
+    local listenerKey = name
+    for existingName in pairs(activeListeners) do
+        if normalizeCharacterName(existingName) == normalizedName then
+            listenerKey = existingName
+            break
+        end
+    end
+    local isNew = activeListeners[listenerKey] == nil
+    activeListeners[listenerKey] = GetTime()
     if isNew then
         markRecipientListDirty()
     end
@@ -189,11 +197,9 @@ end
 local getClassColor = TrialChatCommon.GetClassColor
 
 local function getKnownNameColor(name, fallback)
+    local shortName = string.match(name or "", "^([^-]+)")
     local classFile = classByName[normalizeName(name)]
-    if not classFile and not string.find(name, "-", 1, true) then
-        local shortName = string.match(name, "^([^-]+)")
-        classFile = shortName and classByName[normalizeName(shortName)]
-    end
+        or shortName and classByName[normalizeName(shortName)]
     return getClassColor(classFile) or fallback
 end
 
@@ -388,9 +394,10 @@ updateChatContentLayout = function()
     chatInput:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -14, 14)
 end
 
-local function printMessage(sender, message, color, nameColor, isEmote)
+local function printMessage(sender, message, color, nameColor, isEmote, senderKey)
     message = TrialChatCommon.FormatMessageText(message)
-    nameColor = isEmote and color or nameColor or color
+    nameColor = isEmote and color
+        or getKnownNameColor(senderKey or sender, nameColor or color)
     local line = color .. "[" .. date("%H:%M") .. "] "
         .. nameColor .. sender
     if isEmote then
@@ -411,7 +418,7 @@ end
 
 local function printIncomingMessage(
     label, sender, message, color, nameColor, senderKey, isEmote)
-    local key = normalizeName(senderKey or sender) .. "\0" .. message
+    local key = normalizeCharacterName(senderKey or sender) .. "\0" .. message
         .. "\0" .. tostring(isEmote)
     local now = GetTime()
     local pending = pendingIncomingMessages[key]
@@ -424,7 +431,8 @@ local function printIncomingMessage(
         if isNewAudience and GetTime() - pending.receivedAt <= 0.2 then
             pending.groupLabel = isGroupMessage and label or pending.groupLabel
             pending.nearby = pending.nearby or isNearbyMessage
-            pending.nameColor = pending.nameColor or nameColor
+            pending.nameColor = getKnownNameColor(senderKey or sender,
+                pending.nameColor or nameColor or pending.color)
             pending.color = pending.groupLabel and "|cffff7d0a" or color
             pending.isEmote = isEmote
             return
@@ -437,7 +445,7 @@ local function printIncomingMessage(
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
             printMessage(pending.sender, pending.message,
-                pending.color, pending.nameColor, pending.isEmote)
+                pending.color, pending.nameColor, pending.isEmote, pending.senderKey)
         end
     elseif recentIncomingMessages[key]
         and now - recentIncomingMessages[key].receivedAt
@@ -457,7 +465,8 @@ local function printIncomingMessage(
         sender = sender,
         message = message,
         color = color,
-        nameColor = nameColor,
+        nameColor = getKnownNameColor(senderKey or sender, nameColor or color),
+        senderKey = senderKey,
         groupLabel = isGroupMessage and label or nil,
         nearby = isNearbyMessage,
         receivedAt = GetTime(),
@@ -469,7 +478,7 @@ local function printIncomingMessage(
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
             printMessage(pending.sender, pending.message,
-                pending.color, pending.nameColor, pending.isEmote)
+                pending.color, pending.nameColor, pending.isEmote, pending.senderKey)
         end
     end)
 end
@@ -893,11 +902,12 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
     end
 
     if message == PONG and channel == "WHISPER" then
-        local pingTime = pendingPings[normalizeName(sender)]
+        local senderKey = normalizeCharacterName(sender)
+        local pingTime = pendingPings[senderKey]
         if pingTime and now - pingTime <= LISTENER_TIMEOUT then
             noteActiveListener(sender)
         end
-        pendingPings[normalizeName(sender)] = nil
+        pendingPings[senderKey] = nil
         updateRecipientList()
         return
     end
@@ -970,8 +980,9 @@ C_Timer.NewTicker(2, function()
         local unit = "nameplate" .. index
         if UnitExists(unit) and UnitIsPlayer(unit) and not UnitIsEnemy("player", unit) then
             local name = getFullName(unit)
-            local nameKey = normalizeName(name)
-            if name and nameKey ~= normalizeName(fullPlayerName) and not processed[nameKey] then
+            local nameKey = normalizeCharacterName(name)
+            if name and nameKey ~= normalizeCharacterName(fullPlayerName)
+                and not processed[nameKey] then
                 rememberUnitClass(unit, name)
                 processed[nameKey] = true
                 local lastPing = lastPingAt[nameKey]

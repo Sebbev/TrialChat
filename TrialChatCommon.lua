@@ -44,9 +44,15 @@ end
 
 function TrialChatCommon.NormalizeCharacterName(name)
     local normalized = TrialChatCommon.NormalizeName(name)
-    if normalized and name and not string.find(name, "-", 1, true)
-        and playerRealm and playerRealm ~= "" then
-        return normalized .. "-" .. TrialChatCommon.NormalizeName(playerRealm)
+    if not normalized then return nil end
+
+    local shortName, realm = string.match(name, "^([^-]+)%-(.+)$")
+    if shortName then
+        return TrialChatCommon.NormalizeName(shortName) .. "-"
+            .. TrialChatCommon.NormalizeRealm(realm)
+    end
+    if playerRealm and playerRealm ~= "" then
+        return normalized .. "-" .. TrialChatCommon.NormalizeRealm(playerRealm)
     end
     return normalized
 end
