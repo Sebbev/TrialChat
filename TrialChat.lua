@@ -1,5 +1,4 @@
 local PREFIX = "TrialChat"
-_G.BINDING_HEADER_TRIALCHAT = "TrialChat"
 local MESSAGE_TAG = "M:"
 local EMOTE_TAG = "E:"
 local PING = "C:PING"
@@ -1497,7 +1496,7 @@ SlashCmdList["TRIALCHAT"] = function(msg)
     sendTrialChatMessage(msg)
 end
 
-BINDING_NAME_TRIALCHAT_OPEN = "Open TrialChat and focus chat"
+BINDING_NAME_TRIALCHAT_OPEN = "Open and start typing"
 
 function TrialChat_Open()
     C_Timer.After(0, function()
