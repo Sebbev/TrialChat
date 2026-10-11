@@ -62,6 +62,22 @@ local function isNearby(key)
     return key == NEARBY
 end
 
+-- The minimal view (TrialChatMinimal.lua) is used instead of the window
+-- while the mode is "minimal"; it's made the first time it's needed.
+local minimal
+
+local function inMinimalMode()
+    return getSettings().mode == "minimal"
+end
+
+-- Whether the open conversation is on screen, in whichever view is in use.
+local function isViewShown()
+    if inMinimalMode() then
+        return minimal ~= nil and minimal:IsShown()
+    end
+    return window ~= nil and window:IsShown()
+end
+
 -- Bursts of changes (a history load, members coming online) redraw once.
 local function scheduleRefresh(name, refresh, delay)
     if refreshPending[name] then return end
@@ -190,8 +206,30 @@ local function renderMessages(options)
     })
 end
 
+-- New messages, notices and redraws go to the view in use; the other one
+-- is drawn again when it's switched to.
 local function showNotice(text, color)
-    messageList:AddNotice(text, color)
+    if inMinimalMode() then
+        minimal:AddNotice(text, color)
+    else
+        messageList:AddNotice(text, color)
+    end
+end
+
+local function appendMessage(entry, isOwn)
+    if inMinimalMode() then
+        minimal:AddEntry(entry)
+    else
+        messageList:AppendEntry(entry, isOwn)
+    end
+end
+
+local function redrawMessages()
+    if inMinimalMode() then
+        minimal:Render()
+    else
+        renderMessages({ keepPosition = true })
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -490,6 +528,25 @@ local function updateConversations()
     end
     conversationList:SetDataProvider(CreateDataProvider(elements),
         ScrollBoxConstants.RetainScrollPosition)
+    if minimal then
+        minimal:UpdateConversations()
+    end
+end
+
+-- The conversations the minimal view switches between: Nearby and the
+-- groups you're connected to.
+local function getMinimalConversations()
+    local conversations = {
+        { key = NEARBY, name = "Nearby", unread = nearbyUnread },
+    }
+    for _, conversation in ipairs(Groups:GetConversations()) do
+        if conversation.state == "online" then
+            conversations[#conversations + 1] = {
+                key = conversation.id, name = conversation.name, unread = conversation.unread,
+            }
+        end
+    end
+    return conversations
 end
 
 local function showConversationMenu(owner, element)
@@ -723,14 +780,118 @@ selectConversation = function(key)
         nearbyUnread = 0
     else
         firstUnread, unreadCount = findFirstUnread(Groups:GetHistory(key))
-        Groups:SetViewedGroup(window:IsShown() and key or nil)
+        Groups:SetViewedGroup(isViewShown() and key or nil)
     end
 
+    if inMinimalMode() then
+        if minimal then
+            minimal:Refresh()
+        end
+        return
+    end
     renderMessages({ firstUnread = firstUnread, unreadCount = unreadCount })
     updateHeader()
     updateComposer()
     updateLayout()
     updateConversations()
+end
+
+-- Messages that came in while the view was closed are new.
+local function onViewShown()
+    if isNearby(selected) then
+        if nearbyUnread > 0 then
+            selectConversation(NEARBY)
+        end
+    elseif findFirstUnread(Groups:GetHistory(selected)) then
+        selectConversation(selected)
+    else
+        Groups:SetViewedGroup(selected)
+    end
+    updateConversations()
+    updateAlpha()
+end
+
+local function getEntries()
+    if isNearby(selected) then
+        return Nearby:GetHistory(), formatNearbyMessage, colorForEntry
+    end
+    return Groups:GetHistory(selected), formatGroupMessage, colorForEntry
+end
+
+local function cycleConversation(step)
+    local conversations = getMinimalConversations()
+    local current = 1
+    for index, conversation in ipairs(conversations) do
+        if conversation.key == selected then
+            current = index
+        end
+    end
+    selectConversation(conversations[(current - 1 + step) % #conversations + 1].key)
+end
+
+local setMode
+
+local function ensureMinimal()
+    if minimal then return minimal end
+    minimal = TrialChatMinimalView.Create({
+        GetSelected = function() return selected end,
+        Select = function(key) selectConversation(key) end,
+        Cycle = cycleConversation,
+        GetConversations = getMinimalConversations,
+        GetEntries = getEntries,
+        GetName = function() return getConversationName(selected) end,
+        GetMessageLimit = getMessageLimit,
+        Send = sendToConversation,
+        ShowFullView = function() setMode("full", true) end,
+        GetSettings = getSettings,
+        OnShown = function()
+            if inMinimalMode() then onViewShown() end
+        end,
+        OnHidden = function()
+            if inMinimalMode() then Groups:SetViewedGroup(nil) end
+        end,
+    })
+    minimal:Refresh()
+    return minimal
+end
+
+-- "minimal" shows the minimal view instead of the window; anything else is
+-- the full window. Either way it opens on the same conversation.
+setMode = function(mode, focusInput)
+    getSettings().mode = mode == "minimal" and "minimal" or nil
+    if mode == "minimal" then
+        ensureMinimal()
+        window:Hide()
+        minimal:Show()
+        selectConversation(selected)
+        if focusInput then
+            minimal:FocusInput()
+        end
+    else
+        if minimal then
+            minimal:Hide()
+        end
+        window:Show()
+        selectConversation(selected)
+        if focusInput then
+            composer.input:SetFocus()
+        end
+    end
+end
+
+-- Other conversations' messages show as a notice in the minimal view.
+local function showToast(key, entry)
+    if not inMinimalMode() or not minimal or TrialChatCommon.IsSelf(entry.sender) then
+        return
+    end
+    if isNearby(key) then
+        minimal:ShowToast(key, "Nearby", nearbyUnread, entry, formatNearbyMessage, colorForEntry)
+        return
+    end
+    local info = Groups:GetInfo(key)
+    if not info or info.muted or entry.read then return end
+    local _, unread = findFirstUnread(Groups:GetHistory(key))
+    minimal:ShowToast(key, info.name, unread, entry, formatGroupMessage, colorForEntry)
 end
 
 ---------------------------------------------------------------------------
@@ -813,6 +974,13 @@ local function createHeader()
     })
     header.closeButton:SetPoint("TOPRIGHT", main, "TOPRIGHT", -12, -16)
 
+    header.minimizeButton = UI.CreateButton(main, {
+        style = "ghost", icon = "collapse", iconSize = 15, width = 28, height = 28,
+        tooltip = "Minimal view",
+        onClick = function() setMode("minimal") end,
+    })
+    header.minimizeButton:SetPoint("RIGHT", header.closeButton, "LEFT", -2, 0)
+
     header.membersButton = UI.CreateButton(main, {
         icon = "members", iconSize = 17, width = 32, height = 32,
         tooltip = function()
@@ -826,7 +994,7 @@ local function createHeader()
             end
         end,
     })
-    header.membersButton:SetPoint("RIGHT", header.closeButton, "LEFT", -6, 0)
+    header.membersButton:SetPoint("RIGHT", header.minimizeButton, "LEFT", -6, 0)
 
     header.muteButton = UI.CreateButton(main, {
         icon = "bell", iconSize = 17, width = 32, height = 32,
@@ -1019,20 +1187,7 @@ local function createWindow()
     window:HookScript("OnEnter", updateAlpha)
     window:HookScript("OnLeave", updateAlpha)
     TrialChatCommon.WatchHover(window, updateAlpha)
-    window:SetScript("OnShow", function()
-        -- Messages that came in while the window was closed are new.
-        if isNearby(selected) then
-            if nearbyUnread > 0 then
-                selectConversation(NEARBY)
-            end
-        elseif findFirstUnread(Groups:GetHistory(selected)) then
-            selectConversation(selected)
-        else
-            Groups:SetViewedGroup(selected)
-        end
-        updateConversations()
-        updateAlpha()
-    end)
+    window:SetScript("OnShow", onViewShown)
     window:SetScript("OnHide", function()
         Groups:SetViewedGroup(nil)
         composer.input:ClearFocus()
@@ -1042,6 +1197,9 @@ local function createWindow()
 
     window:Hide()
     selectConversation(NEARBY)
+    if inMinimalMode() then
+        ensureMinimal()
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -1063,7 +1221,7 @@ local function onNearbyChange(kind, ...)
         -- A closed window opens on nearby chat; an open one stays where it
         -- is and counts the message as unread.
         local switched = false
-        if not isNearby(selected) and (isOwn or not window:IsShown()) then
+        if not isNearby(selected) and (isOwn or not isViewShown()) then
             selectConversation(NEARBY)
             switched = true
         end
@@ -1072,8 +1230,9 @@ local function onNearbyChange(kind, ...)
         if not isNearby(selected) then
             nearbyUnread = nearbyUnread + 1
             scheduleRefresh("conversations", updateConversations)
+            showToast(NEARBY, entry)
         elseif not switched then
-            messageList:AppendEntry(entry, isOwn)
+            appendMessage(entry, isOwn)
         end
     elseif kind == "notice" then
         local text, isError = ...
@@ -1089,25 +1248,32 @@ local function onGroupsChange(kind, id, entry, appended)
     if kind == "open" then
         Messenger:Open(false)
         selectConversation(id)
-        composer.input:SetFocus()
+        if inMinimalMode() then
+            minimal:FocusInput()
+        else
+            composer.input:SetFocus()
+        end
         return
     end
     if not window then return end
 
     if kind == "message" and id == selected then
         if appended then
-            messageList:AppendEntry(entry, TrialChatCommon.IsSelf(entry.sender))
+            appendMessage(entry, TrialChatCommon.IsSelf(entry.sender))
         else
             -- Older messages (from a history load) go in between.
             scheduleRefresh("render", function()
                 if selected == id then
-                    renderMessages({ keepPosition = true })
+                    redrawMessages()
                 end
             end, RENDER_DELAY)
         end
-        if window:IsShown() then
+        if isViewShown() then
             noteMessage()
         end
+    end
+    if kind == "message" and appended and (id ~= selected or not isViewShown()) then
+        showToast(id, entry)
     end
     if kind == "groups" and not isNearby(selected) and not Groups:GetInfo(selected) then
         selectConversation(NEARBY)
@@ -1116,7 +1282,7 @@ local function onGroupsChange(kind, id, entry, appended)
         scheduleRefresh("header", updateHeader)
         if kind == "members" then
             scheduleRefresh("members", updateMembers)
-        elseif kind == "look" then
+        elseif kind == "look" and not inMinimalMode() then
             scheduleRefresh("avatars", function() messageList:RefreshAvatars() end)
         end
     end
@@ -1128,6 +1294,18 @@ Groups:SetChangeHandler(onGroupsChange)
 
 function Messenger:Open(focusInput)
     createWindow()
+    if inMinimalMode() then
+        ensureMinimal()
+        -- Opening to type with a notice showing answers that conversation.
+        local replyTo = focusInput and minimal:GetToastKey()
+        minimal:Show()
+        if replyTo then
+            minimal:Reply()
+        elseif focusInput then
+            minimal:FocusInput()
+        end
+        return
+    end
     window:Show()
     if focusInput then
         composer.input:SetFocus()
@@ -1136,15 +1314,17 @@ function Messenger:Open(focusInput)
 end
 
 function Messenger:Toggle()
-    if window and window:IsShown() then
-        window:Hide()
-    else
+    if not isViewShown() then
         Messenger:Open(true)
+    elseif inMinimalMode() then
+        minimal:Hide()
+    else
+        window:Hide()
     end
 end
 
 function Messenger:IsShown()
-    return window ~= nil and window:IsShown()
+    return isViewShown()
 end
 
 local eventFrame = CreateFrame("Frame")

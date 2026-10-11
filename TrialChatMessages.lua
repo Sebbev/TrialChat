@@ -80,12 +80,17 @@ local function onAvatarClick(avatar)
     end
 end
 
+-- Makes links in a frame's text clickable, with tooltips.
+function TrialChatMessageList.EnableLinks(frame)
+    frame:EnableMouse(true)
+    frame:SetHyperlinksEnabled(true)
+    frame:SetScript("OnHyperlinkClick", onHyperlinkClick)
+    frame:SetScript("OnHyperlinkEnter", onHyperlinkEnter)
+    frame:SetScript("OnHyperlinkLeave", GameTooltip_Hide)
+end
+
 local function createRowParts(row)
-    row:EnableMouse(true)
-    row:SetHyperlinksEnabled(true)
-    row:SetScript("OnHyperlinkClick", onHyperlinkClick)
-    row:SetScript("OnHyperlinkEnter", onHyperlinkEnter)
-    row:SetScript("OnHyperlinkLeave", GameTooltip_Hide)
+    TrialChatMessageList.EnableLinks(row)
     row:SetScript("OnEnter", onRowEnter)
     row:SetScript("OnLeave", onRowLeave)
 

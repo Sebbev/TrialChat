@@ -36,6 +36,7 @@ UI.Color = {
     textSoft = hexColor("d6d0bd"),
     muted = hexColor("8b929b"),
     white = hexColor("ffffff"),
+    black = hexColor("000000"),
     accent = hexColor("e8b33f"),
     accentHover = hexColor("f0c25a"),
     accentText = hexColor("1a1405"),
@@ -147,6 +148,9 @@ local CORNER_COORDS = {
 local ALL_CORNERS = { TOPLEFT = true, TOPRIGHT = true, BOTTOMLEFT = true, BOTTOMRIGHT = true }
 UI.ALL_CORNERS = ALL_CORNERS
 
+-- A 1 px outline needs a ring as thin as 1 px at the corner's size.
+local RING_TEXTURES = { [13] = "ring-13.tga", [19] = "ring-19.tga" }
+
 local Box = {}
 Box.__index = Box
 
@@ -192,7 +196,7 @@ function UI.CreateBox(owner, options)
 
     if options.border then
         for point, coords in pairs(CORNER_COORDS) do
-            local ring = addPart(box, layer, subLevel + 1, MEDIA .. "ring.tga")
+            local ring = addPart(box, layer, subLevel + 1, MEDIA .. (RING_TEXTURES[radius] or "ring.tga"))
             ring:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
             ring:SetSize(radius, radius)
             ring:SetPoint(point, region, point)
@@ -495,7 +499,19 @@ local BUTTON_STYLES = {
     accent = { fill = "accent", hover = "accentHover", content = "accentText" },
     -- A dashed outline, for adding things.
     dashed = { hover = "hover", content = "textSoft" },
+    -- See-through dark with a faint outline, for buttons over the game world.
+    hud = {
+        fill = "sidebar", hover = "selected", fillAlpha = 0.8,
+        border = "white", borderAlpha = 0.16, content = "textSoft",
+    },
 }
+
+-- Buttons can switch style (a pill becomes "accent" when selected); a style
+-- without an outline hides the one it was made with.
+function UI.SetButtonStyle(button, style)
+    button.style = style
+    UI.UpdateButton(button)
+end
 
 function UI.UpdateButton(button)
     local style = BUTTON_STYLES[button.style]
@@ -504,13 +520,17 @@ function UI.UpdateButton(button)
     local fill = button.active and "pressed"
         or (hovered and style.hover) or style.fill
     if fill then
-        button.box:SetColor(Color[fill])
+        button.box:SetColor(Color[fill], not button.active and style.fillAlpha or 1)
         button.box:Show()
     else
         button.box:Hide()
     end
-    if style.border then
-        button.box:SetBorderColor(Color[button.active and "pressedBorder" or style.border])
+    if button.active then
+        button.box:SetBorderColor(Color.pressedBorder)
+    elseif style.border then
+        button.box:SetBorderColor(Color[style.border], style.borderAlpha)
+    else
+        button.box:SetBorderColor(Color.white, 0)
     end
 
     local content = Color[(button.active and "white")
@@ -541,6 +561,9 @@ local function layoutButtonContent(button)
         label:SetPoint("LEFT", icon, "RIGHT", 6, 0)
     elseif label then
         label:SetPoint("CENTER")
+        if button.autoWidth then
+            button:SetWidth(math.ceil(label:GetStringWidth() + 26))
+        end
     elseif icon then
         icon:SetPoint("CENTER")
     end
@@ -582,6 +605,7 @@ function UI.CreateButton(parent, options)
         button.label:SetText(options.text)
     end
     button.centered = options.centered
+    button.autoWidth = options.width == nil
     button.tooltip = options.tooltip
     button.SetLabel = setButtonText
     layoutButtonContent(button)
