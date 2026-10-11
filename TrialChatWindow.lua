@@ -667,9 +667,11 @@ local function updateLayout()
     main:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 0, 0)
     main:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMRIGHT", 0, 0)
     if membersShown then
-        main:SetPoint("RIGHT", membersPanel, "LEFT", 0, 0)
+        main:SetPoint("TOPRIGHT", membersPanel, "TOPLEFT", 0, 0)
+        main:SetPoint("BOTTOMRIGHT", membersPanel, "BOTTOMLEFT", 0, 0)
     else
-        main:SetPoint("RIGHT", window, "RIGHT", -1, 0)
+        main:SetPoint("TOPRIGHT", window, "TOPRIGHT", -1, -1)
+        main:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT", -1, 1)
     end
 
     local nearbyChat = isNearby(selected)
@@ -841,8 +843,11 @@ local function createHeader()
     turn:SetDegrees(-360)
     turn:SetDuration(1.2)
 
-    header.title:SetPoint("RIGHT", header.syncButton, "LEFT", -12, 0)
-    header.subtitle:SetPoint("RIGHT", header.syncButton, "LEFT", -12, 0)
+    -- The title and subtitle take the width left of the buttons, anchored by
+    -- their top corners so their height stays their own. The 32 px buttons,
+    -- centered on the close button, have their tops level with the title.
+    header.title:SetPoint("TOPRIGHT", header.syncButton, "TOPLEFT", -12, 0)
+    header.subtitle:SetPoint("TOPRIGHT", header.title, "BOTTOMRIGHT", 0, -5)
 
     local line = UI.CreateLine(main)
     line:SetPoint("TOPLEFT", main, "TOPLEFT", 0, -HEADER_HEIGHT)

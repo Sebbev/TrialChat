@@ -132,6 +132,16 @@ local function hideRowParts(row)
     row.showsTimeOnHover = false
 end
 
+-- The text gets the width its row's height was measured for and grows down
+-- as it wraps. Taking the width from anchors on both sides doesn't work: a
+-- new row's text is laid out before they resolve and stays on one line
+-- until the next layout, and a RIGHT anchor would also limit its height.
+local function placeText(row, element, left, top)
+    local width = (element.measuredWidth or row:GetWidth()) - left - RIGHT_PADDING
+    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", left, top)
+    row.text:SetWidth(math.max(1, width))
+end
+
 local function initializeRow(row, element)
     if not row.text then
         createRowParts(row)
@@ -167,30 +177,28 @@ local function initializeRow(row, element)
             row.name:Show()
             row.time:SetText(element.time)
             row.time:Show()
-            text:SetPoint("TOPLEFT", row, "TOPLEFT", TEXT_LEFT, -HEADER_TOP - NAME_HEIGHT)
+            placeText(row, element, TEXT_LEFT, -HEADER_TOP - NAME_HEIGHT)
         else
-            text:SetPoint("TOPLEFT", row, "TOPLEFT", TEXT_LEFT, -CONTINUATION_TOP)
+            placeText(row, element, TEXT_LEFT, -CONTINUATION_TOP)
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
         end
-        text:SetPoint("RIGHT", row, "RIGHT", -RIGHT_PADDING, 0)
         return
     end
 
     if kind == "line" then
         text:SetJustifyH("LEFT")
         UI.SetTextColor(text, Color.text)
-        text:SetPoint("TOPLEFT", row, "TOPLEFT", SIDE_PADDING, -TEXT_BOTTOM)
+        placeText(row, element, SIDE_PADDING, -TEXT_BOTTOM)
     else
         text:SetJustifyH("CENTER")
         UI.SetTextColor(text, element.color or Color.emote)
-        text:SetPoint("TOPLEFT", row, "TOPLEFT", SIDE_PADDING, -CENTERED_PADDING)
+        placeText(row, element, SIDE_PADDING, -CENTERED_PADDING)
         if element.time then
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
         end
     end
-    text:SetPoint("RIGHT", row, "RIGHT", -RIGHT_PADDING, 0)
 end
 
 function TrialChatMessageList.Create(parent)
