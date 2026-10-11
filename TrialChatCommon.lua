@@ -459,6 +459,42 @@ function TrialChatCommon.RemovePlayerLinks(text)
     return (string.gsub(text, "|Hplayer:[^|]+|h(.-)|h", "%1", 1))
 end
 
+-- Musician song links you post name no player, because the song is yours.
+-- In normal chat, Musician's own chat filter adds the sender as the song's
+-- owner when the message arrives; TrialChat messages never go through that
+-- filter, so without this, clicking the link asks the wrong player (the one
+-- clicking) for the song and the import fails.
+local SONG_LINK_WITHOUT_OWNER = "|HmusicianSong|h"
+
+local function setSongLinkOwner(text, owner)
+    return (string.gsub(text, SONG_LINK_WITHOUT_OWNER, function()
+        return "|HmusicianSong:" .. owner .. "|h"
+    end))
+end
+
+-- For received messages: links without an owner belong to the sender, and
+-- with Musician installed, typed [Music: Title] text becomes a link too.
+function TrialChatCommon.AddSongLinkOwner(text, sender)
+    if not text or not sender or sender == ""
+        or TrialChatCommon.IsSelf(sender) then
+        return text
+    end
+    text = setSongLinkOwner(text, sender)
+    local songLinks = Musician and Musician.SongLinks
+    if songLinks and songLinks.ChatLinksToHyperlinks then
+        text = songLinks.ChatLinksToHyperlinks(text, sender)
+    end
+    return text
+end
+
+-- For sent messages: name yourself as the owner, so players on older
+-- TrialChat versions that don't add it get working links as well.
+function TrialChatCommon.AddOwnSongLinkOwner(text)
+    local playerFullName = TrialChatCommon.GetPlayerFullName()
+    if not text or not playerFullName then return text end
+    return setSongLinkOwner(text, playerFullName)
+end
+
 function TrialChatCommon.ParseEmote(message)
     message = TrialChatCommon.NormalizeMessageMarkup(message)
     local command, argument = string.match(message, "^/([%a]+)%s*(.-)%s*$")

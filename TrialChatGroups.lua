@@ -242,7 +242,8 @@ local function renderGroupMessage(session, entry)
     local timestamp = timestampColor
         .. "[" .. date("%H:%M", entry.timestamp) .. "]|r "
     local senderText = nameColor .. shortSender .. "|r"
-    local displayMessage = TrialChatCommon.FormatMessageText(entry.message)
+    local displayMessage = TrialChatCommon.FormatMessageText(
+        TrialChatCommon.AddSongLinkOwner(entry.message, entry.sender))
     if entry.isEmote then
         return timestamp .. senderText .. " "
             .. "|cffff7d0a" .. displayMessage .. "|r"
@@ -489,7 +490,8 @@ local function sendGroupMessage(session, message)
     local timestamp = GetServerTime()
     local messageKind = isEmote and "EMOTE2" or "MSG2"
     local body = table.concat({
-        messageId, tostring(timestamp), isEmote and "E" or "M", message,
+        messageId, tostring(timestamp), isEmote and "E" or "M",
+        TrialChatCommon.AddOwnSongLinkOwner(message),
     }, ":")
     local encodedBody = TrialChatCommon.EncodeMessageMarkup(body)
     local payload = GROUP_TAG .. messageKind .. "|" .. session.id .. "|" .. encodedBody

@@ -1228,6 +1228,7 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
     local chatText = TrialChatCommon.DecodeMessageMarkup(
         string.sub(message, #messageTag + 1))
     chatText = TrialChatCommon.NormalizeMessageMarkup(chatText)
+    chatText = TrialChatCommon.AddSongLinkOwner(chatText, sender)
     local shortSender = string.match(sender, "^([^-]+)") or sender
     noteActiveListener(sender)
     updateRecipientList()
@@ -1340,7 +1341,7 @@ sendTrialChatMessage = function(msg)
     end
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
     local payload = (isEmote and EMOTE_TAG or MESSAGE_TAG)
-        .. TrialChatCommon.EncodeMessageMarkup(msg)
+        .. TrialChatCommon.EncodeMessageMarkup(TrialChatCommon.AddOwnSongLinkOwner(msg))
     -- Too long for one addon message: send it in parts the receiver joins.
     local packets = { payload }
     if #payload > 255 then
