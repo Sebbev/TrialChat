@@ -9,8 +9,9 @@ local Color = UI.Color
 local NEARBY = "nearby"
 local DEFAULT_WIDTH = 860
 local DEFAULT_HEIGHT = 540
-local MIN_WIDTH, MIN_HEIGHT = 640, 400
-local MAX_WIDTH, MAX_HEIGHT = 1600, 1100
+-- Size limits of the window without the member list, which adds its width.
+local MIN_WIDTH, MIN_HEIGHT = 460, 400
+local MAX_WIDTH, MAX_HEIGHT = 1420, 1100
 local SIDEBAR_WIDTH = 200
 local MEMBERS_WIDTH = 180
 local HEADER_HEIGHT = 60
@@ -683,6 +684,29 @@ local function updateLayout()
     updateMembers()
 end
 
+local function getWidthBounds()
+    local extra = getSettings().membersShown and MEMBERS_WIDTH or 0
+    return MIN_WIDTH + extra, MAX_WIDTH + extra
+end
+
+-- The member list adds to the window instead of taking its width from the
+-- chat: the window grows or shrinks on the right, so the chat keeps its
+-- size and place.
+local function setMembersShown(shown)
+    getSettings().membersShown = shown
+    local left, top = window:GetLeft(), window:GetTop()
+    local minWidth, maxWidth = getWidthBounds()
+    local width = window:GetWidth() + (shown and MEMBERS_WIDTH or -MEMBERS_WIDTH)
+    window:SetResizeBounds(minWidth, MIN_HEIGHT, maxWidth, MAX_HEIGHT)
+    if left and top then
+        window:ClearAllPoints()
+        window:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+    end
+    window:SetWidth(math.max(minWidth, math.min(maxWidth, width)))
+    updateLayout()
+    saveWindowSettings()
+end
+
 selectConversation = function(key)
     if not isNearby(key) and not Groups:GetInfo(key) then
         key = NEARBY
@@ -796,9 +820,7 @@ local function createHeader()
             return (getSettings().membersShown and "Hide " or "Show ") .. list
         end,
         onClick = function(self)
-            local settings = getSettings()
-            settings.membersShown = not settings.membersShown
-            updateLayout()
+            setMembersShown(not getSettings().membersShown)
             if GameTooltip:GetOwner() == self then
                 self:GetScript("OnEnter")(self)
             end
@@ -937,7 +959,8 @@ local function createWindow()
     local settings = getSettings()
     TrialChatDB.chatWindow = nil
     window = CreateFrame("Frame", "TrialChatWindow", UIParent)
-    local width = math.max(MIN_WIDTH, math.min(MAX_WIDTH,
+    local minWidth, maxWidth = getWidthBounds()
+    local width = math.max(minWidth, math.min(maxWidth,
         tonumber(settings.width) or DEFAULT_WIDTH))
     local height = math.max(MIN_HEIGHT, math.min(MAX_HEIGHT,
         tonumber(settings.height) or DEFAULT_HEIGHT))
@@ -946,7 +969,7 @@ local function createWindow()
     window:SetFrameLevel(100)
     window:SetMovable(true)
     window:SetResizable(true)
-    window:SetResizeBounds(MIN_WIDTH, MIN_HEIGHT, MAX_WIDTH, MAX_HEIGHT)
+    window:SetResizeBounds(minWidth, MIN_HEIGHT, maxWidth, MAX_HEIGHT)
     window:SetClampedToScreen(true)
     local centerX, centerY = tonumber(settings.centerX), tonumber(settings.centerY)
     if centerX and centerY then
