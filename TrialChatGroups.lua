@@ -343,7 +343,9 @@ local function addGroupMessage(
     end
     timestamp = timestamp or GetServerTime()
 
-    if shouldNotify and not session.muted then
+    -- No sound for a group you're already looking at: its tab is showing in
+    -- the open TrialChat window, or its own window is open.
+    if shouldNotify and not session.muted and not isGroupViewed(session) then
         PlaySound(SOUNDKIT.TELL_MESSAGE)
     end
 
