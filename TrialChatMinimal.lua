@@ -1,7 +1,8 @@
 -- The minimal view of TrialChat: the newest messages of the open
 -- conversation over the game world, fading with age like the chat frames,
 -- a row of conversations and a message box. When another conversation gets
--- a message, a notice shows in the corner. The full window is a click away.
+-- a message, a notice shows in the corner, and an invite to a group shows
+-- above the conversations. The full window is a click away.
 TrialChatMinimalView = {}
 local UI = TrialChatUI
 local Color = UI.Color
@@ -68,7 +69,7 @@ end
 -- connected groups as { key, name, unread }), GetEntries() (the open
 -- conversation's history, how to format a message and color a name),
 -- GetName(), GetMessageLimit(), Send(text), ShowFullView(), GetSettings(),
--- OnShown() and OnHidden().
+-- AnswerInvite(join), OnShown() and OnHidden().
 function TrialChatMinimalView.Create(controller)
     local view = setmetatable({
         controller = controller, lines = {}, chips = {}, pills = {},
@@ -122,6 +123,9 @@ function TrialChatMinimalView.Create(controller)
     })
     view.newestButton:SetFrameLevel(view.chrome:GetFrameLevel() + 10)
     view.newestButton:Hide()
+    -- Not part of the chrome, so it doesn't fade while it waits for you.
+    view.inviteCard = UI.CreateInviteCard(frame, function(join) controller.AnswerInvite(join) end)
+    view.inviteCard:SetFrameLevel(view.chrome:GetFrameLevel() + 10)
     view:CreateToast()
 
     local sinceUpdate = 0
@@ -339,7 +343,23 @@ function View:UpdateConversations()
     end
     self.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + ROW_GAP
         + (row + 1) * (PILL_HEIGHT + PILL_GAP) - PILL_GAP
+    -- An invite goes between the conversations and the messages.
+    local card = self.inviteCard
+    card:SetShown(self.invite ~= nil)
+    if self.invite then
+        local bottom = self:GetLinesBottom()
+        local height = card:SetInvite(self.invite, self.width)
+        card:ClearAllPoints()
+        card:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, bottom)
+        self.chromeHeight = self.chromeHeight + height + ROW_GAP
+    end
     self:LayoutLines()
+end
+
+-- invite is { groupName, inviter }, or nil when there's none.
+function View:SetInvite(invite)
+    self.invite = invite
+    self:UpdateConversations()
 end
 
 -- While you use it, the panel is the full size you gave it; otherwise it

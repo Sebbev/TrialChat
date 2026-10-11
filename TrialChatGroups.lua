@@ -1478,11 +1478,12 @@ local function deleteGroup(id)
 end
 
 -- Any member can invite a player to a connected group. The invite carries
--- the group's name and password, as joining needs them; the player gets a
--- popup, and accepting joins through whoever invited them. They answer with
--- an INVITEREPLY of "shown", "declined", "member" (already in it) or "busy"
--- (another invite is open). Versions without invites don't answer at all.
-local INVITE_POPUP_SECONDS = 60
+-- the group's name and password, as joining needs them; TrialChat opens on
+-- the player's side with the invite in it, and joining goes through whoever
+-- invited them. They answer with an INVITEREPLY of "shown", "declined",
+-- "member" (already in it) or "busy" (another invite is open). Versions
+-- without invites don't answer at all.
+local INVITE_SECONDS = 60
 local INVITE_ANSWER_SECONDS = 5
 -- After declining, the same player's invites to that group are declined
 -- without asking for a while.
@@ -1519,36 +1520,9 @@ local function getInviterText(sender)
     return color and (color .. text .. "|r") or text
 end
 
-local function defineInviteDialogs()
-    if StaticPopupDialogs.TRIALCHAT_GROUP_INVITE then return end
+local function defineInviteDialog()
+    if StaticPopupDialogs.TRIALCHAT_INVITE_PLAYER then return end
 
-    StaticPopupDialogs.TRIALCHAT_GROUP_INVITE = {
-        text = "%s invites you to join the TrialChat group %s.",
-        button1 = ACCEPT,
-        button2 = DECLINE,
-        sound = SOUNDKIT.IG_PLAYER_INVITE,
-        OnAccept = function(_, invite)
-            local savedGroup = getSavedGroups()[invite.id]
-            joinGroup(invite.name, invite.password, invite.sender,
-                type(savedGroup) == "table" and savedGroup or nil)
-        end,
-        OnCancel = function(_, invite, reason)
-            -- Not when it timed out: that isn't an answer.
-            if reason == "clicked" then
-                declinedInvites[getDeclineKey(invite)] = GetTime()
-                answerInvite(invite, "declined")
-            end
-        end,
-        OnHide = function(_, invite)
-            if shownInvite == invite then
-                shownInvite = nil
-            end
-        end,
-        timeout = INVITE_POPUP_SECONDS,
-        whileDead = true,
-        hideOnEscape = true,
-        preferredIndex = 3,
-    }
     StaticPopupDialogs.TRIALCHAT_INVITE_PLAYER = {
         text = "Invite a player to %s:",
         button1 = "Invite",
@@ -1606,14 +1580,17 @@ local function receiveInvite(id, sender, body)
         return
     end
 
-    defineInviteDialogs()
     shownInvite = invite
-    if not StaticPopup_Show("TRIALCHAT_GROUP_INVITE", getInviterText(sender), name, invite) then
-        shownInvite = nil
-        answerInvite(invite, "busy")
-        return
-    end
     answerInvite(invite, "shown")
+    PlaySound(SOUNDKIT.TELL_MESSAGE)
+    notifyChange("invite")
+    -- Left unanswered, it goes away without telling the inviter.
+    C_Timer.After(INVITE_SECONDS, function()
+        if shownInvite == invite then
+            shownInvite = nil
+            notifyChange("invite")
+        end
+    end)
 end
 
 local function receiveInviteReply(id, sender, answer)
@@ -1898,8 +1875,9 @@ Groups.MAX_HISTORY = MAX_CHAT_HISTORY
 -- (a group connected, went away, or started or stopped connecting), "open"
 -- (show this group: you created or joined it, or asked for it again),
 -- "members", "unread", "history" (a history load started, progressed or
--- finished), "look" (a member's race or gender came in), or "message"
--- (followed by the history entry and whether it was appended at the end).
+-- finished), "look" (a member's race or gender came in), "invite" (an
+-- invite came in or went away; see GetInvite), or "message" (followed by
+-- the history entry and whether it was appended at the end).
 function Groups:SetChangeHandler(handler)
     changeHandler = handler
 end
@@ -2148,8 +2126,8 @@ function Groups:Invite(id, name)
         table.remove(sentInvites, currentIndex)
         showNotice(name .. " didn't answer the invite. They need TrialChat to get invites.")
     end)
-    -- A declined popup can answer until it times out.
-    C_Timer.After(INVITE_ANSWER_SECONDS + INVITE_POPUP_SECONDS, function()
+    -- A shown invite can be declined until it goes away.
+    C_Timer.After(INVITE_ANSWER_SECONDS + INVITE_SECONDS, function()
         local current, currentIndex = findSentInvite(id, name)
         if current == invite then
             table.remove(sentInvites, currentIndex)
@@ -2161,8 +2139,34 @@ end
 function Groups:ShowInviteDialog(id)
     local session = activeGroups[id]
     if not session then return end
-    defineInviteDialogs()
+    defineInviteDialog()
     StaticPopup_Show("TRIALCHAT_INVITE_PLAYER", session.name, nil, id)
+end
+
+-- The invite waiting for your answer, as { groupName, inviter } (the
+-- inviter's name to show), or nil.
+function Groups:GetInvite()
+    if not shownInvite then return nil end
+    return {
+        groupName = shownInvite.name,
+        inviter = getInviterText(shownInvite.sender),
+    }
+end
+
+-- Joins the group you're invited to (true) or declines the invite.
+function Groups:AnswerInvite(join)
+    local invite = shownInvite
+    if not invite then return end
+    shownInvite = nil
+    notifyChange("invite")
+    if join then
+        local savedGroup = getSavedGroups()[invite.id]
+        joinGroup(invite.name, invite.password, invite.sender,
+            type(savedGroup) == "table" and savedGroup or nil)
+    else
+        declinedInvites[getDeclineKey(invite)] = GetTime()
+        answerInvite(invite, "declined")
+    end
 end
 
 local eventFrame = CreateFrame("Frame")
