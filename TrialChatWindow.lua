@@ -16,6 +16,7 @@ local SIDEBAR_WIDTH = 200
 local MEMBERS_WIDTH = 180
 local HEADER_HEIGHT = 60
 local COMPOSER_HEIGHT = 64
+local INVITE_MARGIN = 20
 local CONVERSATION_ROW_HEIGHT = 40
 local MEMBER_ROW_HEIGHT = 26
 local MEMBER_LABEL_HEIGHT = 30
@@ -39,6 +40,7 @@ local membersPanel
 local conversationList
 local memberList
 local messageList
+local inviteCard
 local searchField
 local addListenerField
 local header = {}
@@ -104,7 +106,8 @@ local function saveWindowSettings()
     settings.centerY = centerY / parentHeight
 end
 
--- The window fades back while you're not using it, like the chat frames.
+-- The window fades back while you're not using it, like the chat frames,
+-- but not while an invite waits for an answer.
 local function updateAlpha()
     if not window then return end
 
@@ -114,6 +117,7 @@ local function updateAlpha()
     local recentMessage = lastMessageAt
         and GetTime() - lastMessageAt < MESSAGE_VISIBLE_SECONDS
     local visible = (window:IsShown() and window:IsMouseOver()) or focused or recentMessage
+        or (inviteCard and inviteCard:IsShown())
     TrialChatCommon.FadeTo(window, visible and 1 or IDLE_ALPHA)
 end
 
@@ -847,6 +851,7 @@ local function ensureMinimal()
         Send = sendToConversation,
         ShowFullView = function() setMode("full", true) end,
         GetSettings = getSettings,
+        AnswerInvite = function(join) Groups:AnswerInvite(join) end,
         OnShown = function()
             if inMinimalMode() then onViewShown() end
         end,
@@ -855,6 +860,7 @@ local function ensureMinimal()
         end,
     })
     minimal:Refresh()
+    minimal:SetInvite(Groups:GetInvite())
     return minimal
 end
 
@@ -1124,6 +1130,30 @@ local function createMembersPanel()
     addListenerField:SetScript("OnLeave", GameTooltip_Hide)
 end
 
+-- An invite to a group shows above the message box in both views, and
+-- the messages make room for it.
+local function updateInvite()
+    local invite = Groups:GetInvite()
+    if minimal then
+        minimal:SetInvite(invite)
+    end
+    if not window then return end
+
+    local atBottom = messageList:IsAtBottom()
+    local bottom = COMPOSER_HEIGHT
+    if invite then
+        bottom = bottom + inviteCard:SetInvite(invite, main:GetWidth() - 2 * INVITE_MARGIN) + 6
+    end
+    inviteCard:SetShown(invite ~= nil)
+    updateAlpha()
+    messageList.scrollBox:ClearAllPoints()
+    messageList.scrollBox:SetPoint("TOPLEFT", main, "TOPLEFT", 0, -HEADER_HEIGHT - 1)
+    messageList.scrollBox:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -14, bottom)
+    if atBottom then
+        C_Timer.After(0, function() messageList:ScrollToBottom() end)
+    end
+end
+
 local function createWindow()
     if window then return end
 
@@ -1171,6 +1201,14 @@ local function createWindow()
     messageList = TrialChatMessageList.Create(main)
     messageList.scrollBox:SetPoint("TOPLEFT", main, "TOPLEFT", 0, -HEADER_HEIGHT - 1)
     messageList.scrollBox:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -14, COMPOSER_HEIGHT)
+    inviteCard = UI.CreateInviteCard(main, function(join) Groups:AnswerInvite(join) end)
+    inviteCard:SetPoint("BOTTOMLEFT", main, "BOTTOMLEFT", INVITE_MARGIN, COMPOSER_HEIGHT)
+    inviteCard:SetFrameLevel(messageList.scrollBox:GetFrameLevel() + 110)
+    main:SetScript("OnSizeChanged", function()
+        if inviteCard:IsShown() then
+            updateInvite()
+        end
+    end)
 
     local resizeGrip = CreateFrame("Button", nil, window)
     resizeGrip:SetSize(14, 14)
@@ -1248,6 +1286,14 @@ local function onNearbyChange(kind, ...)
 end
 
 local function onGroupsChange(kind, id, entry, appended)
+    if kind == "invite" then
+        -- TrialChat opens to show an invite.
+        if Groups:GetInvite() then
+            Messenger:Open(false)
+        end
+        updateInvite()
+        return
+    end
     if kind == "open" then
         Messenger:Open(false)
         selectConversation(id)

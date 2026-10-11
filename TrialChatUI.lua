@@ -671,3 +671,52 @@ function UI.CreateField(parent, options)
     updateFieldLook(field)
     return field
 end
+
+---------------------------------------------------------------------------
+-- Group invites
+---------------------------------------------------------------------------
+local INVITE_PADDING = 12
+local INVITE_TEXT_LEFT = 36
+local INVITE_BUTTON_HEIGHT = 26
+
+-- Lays the card out for invite ({ groupName, inviter }) at this width and
+-- returns its height.
+local function setInvite(card, invite, width)
+    card:SetWidth(width)
+    card.text:SetWidth(width - INVITE_TEXT_LEFT - INVITE_PADDING)
+    card.text:SetText(invite.inviter .. " invites you to join "
+        .. UI.ColorText(Color.accent, invite.groupName))
+    local height = math.ceil(INVITE_PADDING + card.text:GetStringHeight() + 8
+        + INVITE_BUTTON_HEIGHT + 10)
+    card:SetHeight(height)
+    return height
+end
+
+-- Who invites you to which group, with Join and Decline; onAnswer is called
+-- with true to join.
+function UI.CreateInviteCard(parent, onAnswer)
+    local card = CreateFrame("Frame", nil, parent)
+    card:EnableMouse(true)
+    card.box = UI.CreateBox(card, { radius = 13, border = true })
+    card.box:SetColor(Color.window, 0.96)
+    card.box:SetBorderColor(Color.accent, 0.5)
+    card.icon = UI.CreateIcon(card, "members", 16, Color.accent)
+    card.icon:SetPoint("TOPLEFT", card, "TOPLEFT", 12, -INVITE_PADDING)
+    card.text = UI.CreateText(card, UI.Font.body)
+    card.text:SetPoint("TOPLEFT", card, "TOPLEFT", INVITE_TEXT_LEFT, -INVITE_PADDING)
+    card.text:SetJustifyH("LEFT")
+    card.text:SetWordWrap(true)
+    card.join = UI.CreateButton(card, {
+        style = "accent", text = "Join", height = INVITE_BUTTON_HEIGHT, radius = 13,
+        font = UI.Font.small, onClick = function() onAnswer(true) end,
+    })
+    card.join:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -10, 10)
+    card.decline = UI.CreateButton(card, {
+        style = "outline", text = "Decline", height = INVITE_BUTTON_HEIGHT, radius = 13,
+        font = UI.Font.small, onClick = function() onAnswer(false) end,
+    })
+    card.decline:SetPoint("RIGHT", card.join, "LEFT", -6, 0)
+    card.SetInvite = setInvite
+    card:Hide()
+    return card
+end
