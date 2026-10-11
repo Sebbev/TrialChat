@@ -282,10 +282,69 @@ function TrialChatCommon.FindUnit(name)
     return nil
 end
 
+-- Shift-clicked links go into the TrialChat box you're typing in. The game
+-- only knows its own chat box, which makes two cases need care:
+-- - For an item link in chat it offers the link twice in one click (the
+--   second time because the first "wasn't taken"), so each click inserts
+--   at most one link.
+-- - Its own box stays the active one while it holds unsent text, and then
+--   it takes the link and the keyboard even while you type in TrialChat; the
+--   link is moved back to you, and its box keeps the rest of its text.
+local lastLinkInput
+local lastLinkInputLostFocusAt
+local lastLinkInsertedAt
+
+local function getFocusedLinkInput()
+    for input in pairs(linkInputs) do
+        if input:IsVisible() and input:HasFocus() then
+            return input
+        end
+    end
+end
+
+local function removeLastLink(editBox, link)
+    local text = editBox:GetText() or ""
+    local first, last
+    local from = 1
+    while true do
+        local linkStart, linkEnd = string.find(text, link, from, true)
+        if not linkStart then break end
+        first, last = linkStart, linkEnd
+        from = linkStart + 1
+    end
+    if first then
+        editBox:SetText(string.sub(text, 1, first - 1) .. string.sub(text, last + 1))
+    end
+end
+
+local function onInsertLink(link)
+    if not link or link == "" then return end
+    local now = GetTime()
+    if lastLinkInsertedAt == now then return end
+
+    local target = getFocusedLinkInput()
+    local gameBox = ChatFrameUtil.GetActiveWindow and ChatFrameUtil.GetActiveWindow()
+    local takenFromYou = not target and lastLinkInputLostFocusAt == now
+        and lastLinkInput and lastLinkInput:IsVisible()
+        and gameBox and gameBox:HasFocus()
+    if takenFromYou then
+        target = lastLinkInput
+        removeLastLink(gameBox, link)
+    end
+    if not target then return end
+
+    lastLinkInsertedAt = now
+    target:Insert(link)
+    if takenFromYou then
+        target:SetFocus()
+    end
+end
+
 function TrialChatCommon.RegisterLinkInput(input)
     linkInputs[input] = true
 
     input:HookScript("OnEditFocusGained", function(self)
+        lastLinkInput = self
         if ChatFrameUtil and ChatFrameUtil.SetChatFocusOverride then
             ChatFrameUtil.SetChatFocusOverride(self)
         end
@@ -298,23 +357,17 @@ function TrialChatCommon.RegisterLinkInput(input)
             ChatFrameUtil.ClearChatFocusOverride()
         end
     end
-    input:HookScript("OnEditFocusLost", clearChatFocusOverride)
+    input:HookScript("OnEditFocusLost", function(self)
+        lastLinkInput = self
+        lastLinkInputLostFocusAt = GetTime()
+        clearChatFocusOverride(self)
+    end)
     input:HookScript("OnHide", clearChatFocusOverride)
 
     if linkInsertHooked or not ChatFrameUtil or not ChatFrameUtil.InsertLink then
         return
     end
-
-    hooksecurefunc(ChatFrameUtil, "InsertLink", function(link)
-        if not link then return end
-
-        for registeredInput in pairs(linkInputs) do
-            if registeredInput:IsShown() and registeredInput:HasFocus() then
-                registeredInput:Insert(link)
-                return
-            end
-        end
-    end)
+    hooksecurefunc(ChatFrameUtil, "InsertLink", onInsertLink)
     linkInsertHooked = true
 end
 
