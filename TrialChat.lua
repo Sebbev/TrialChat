@@ -421,7 +421,7 @@ updateChatContentLayout = function()
 
     chatLog:ClearAllPoints()
     chatLog:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 14, TAB_TOP - TAB_HEIGHT - 4)
-    chatLog:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -14, 48)
+    chatLog:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -28, 48)
     chatInput:ClearAllPoints()
     chatInput:SetHeight(26)
     chatInput:SetPoint("BOTTOMLEFT", chatWindow, "BOTTOMLEFT", 14, 14)

@@ -798,7 +798,7 @@ local function createGroupWindow(session)
     TrialChatCommon.SetUpChatLog(window.log)
     TrialChatCommon.SetChatLogLines(window.log, getHistoryLines(session))
     window.log:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -58)
-    window.log:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -14, 48)
+    window.log:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 48)
 
     local memberPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
     window.memberPanel = memberPanel

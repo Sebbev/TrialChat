@@ -561,14 +561,27 @@ function TrialChatCommon.SetUpChatLog(log)
             newMessagesButton:Hide()
         end
     end)
-    log:EnableMouseWheel(true)
-    log:SetScript("OnMouseWheel", function(self, delta)
-        if delta > 0 then
-            self:ScrollUp()
-        else
-            self:ScrollDown()
-        end
-    end)
+
+    -- A scroll bar to the right of the log, wired up the same way as
+    -- Blizzard's own chat logs; this also makes the mouse wheel scroll
+    -- three lines at a time.
+    if ScrollUtil and ScrollUtil.InitScrollingMessageFrameWithScrollBar then
+        local scrollBar = CreateFrame(
+            "EventFrame", nil, log:GetParent(), "MinimalScrollBar")
+        scrollBar:SetPoint("TOPLEFT", log, "TOPRIGHT", 6, 0)
+        scrollBar:SetPoint("BOTTOMLEFT", log, "BOTTOMRIGHT", 6, 0)
+        ScrollUtil.InitScrollingMessageFrameWithScrollBar(log, scrollBar)
+        log.scrollBar = scrollBar
+    else
+        log:EnableMouseWheel(true)
+        log:SetScript("OnMouseWheel", function(self, delta)
+            if delta > 0 then
+                self:ScrollUp()
+            else
+                self:ScrollDown()
+            end
+        end)
+    end
 end
 
 function TrialChatCommon.AddChatLogMessage(log, line, scrollToBottom)
