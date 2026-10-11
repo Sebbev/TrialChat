@@ -1271,18 +1271,25 @@ createGroup = function(name, password, savedGroup, autoJoin)
     activateGroup(session)
 end
 
-local function validateGroupDetails(name, password)
-    name = strtrim(name or "")
-    password = password or ""
+-- Why a group name and password can't be used, or nil when they can.
+local function getGroupDetailsProblem(name, password)
     if #name == 0 or #name > MAX_GROUP_NAME_BYTES
         or not string.match(name, "^[%w _]+$") then
-        showNotice("Use a group name of 1-" .. MAX_GROUP_NAME_BYTES
-            .. " letters, numbers, spaces, or underscores.")
-        return nil
+        return "Use a group name of 1-" .. MAX_GROUP_NAME_BYTES
+            .. " letters, numbers, spaces, or underscores."
     end
     if #password == 0 or #password > MAX_PASSWORD_BYTES
         or string.find(password, "[%c]") then
-        showNotice("Enter a password of 1-" .. MAX_PASSWORD_BYTES .. " characters.")
+        return "Enter a password of 1-" .. MAX_PASSWORD_BYTES .. " characters."
+    end
+end
+
+local function validateGroupDetails(name, password)
+    name = strtrim(name or "")
+    password = password or ""
+    local problem = getGroupDetailsProblem(name, password)
+    if problem then
+        showNotice(problem)
         return nil
     end
     return name, password
@@ -1468,6 +1475,161 @@ local function deleteGroup(id)
     getSavedGroups()[id] = nil
     notifyChange("groups", id)
     showNotice("Deleted " .. (session and session.name or savedGroup.name) .. ".")
+end
+
+-- Any member can invite a player to a connected group. The invite carries
+-- the group's name and password, as joining needs them; the player gets a
+-- popup, and accepting joins through whoever invited them. They answer with
+-- an INVITEREPLY of "shown", "declined", "member" (already in it) or "busy"
+-- (another invite is open). Versions without invites don't answer at all.
+local INVITE_POPUP_SECONDS = 60
+local INVITE_ANSWER_SECONDS = 5
+-- After declining, the same player's invites to that group are declined
+-- without asking for a while.
+local INVITE_REPEAT_SECONDS = 60
+local sentInvites = {}
+local declinedInvites = {}
+local shownInvite
+
+local function findSentInvite(id, name)
+    for index, invite in ipairs(sentInvites) do
+        if invite.id == id and namesMatch(invite.name, name) then
+            return invite, index
+        end
+    end
+end
+
+local function answerInvite(invite, answer)
+    sendGroupProtocol({ id = invite.id }, "INVITEREPLY", invite.sender, answer)
+end
+
+local function getDeclineKey(invite)
+    return invite.id .. "\0" .. normalizeName(invite.sender)
+end
+
+-- The inviter's name in their class color, with their realm when it isn't yours.
+local function getInviterText(sender)
+    local name, realm = string.match(sender, "^([^-]+)%-(.+)$")
+    local text = sender
+    if name and TrialChatCommon.NormalizeRealm(realm)
+        == TrialChatCommon.NormalizeRealm(TrialChatCommon.GetPlayerRealm() or "") then
+        text = name
+    end
+    local color = getClassColor(TrialChatCommon.GetKnownClass(sender))
+    return color and (color .. text .. "|r") or text
+end
+
+local function defineInviteDialogs()
+    if StaticPopupDialogs.TRIALCHAT_GROUP_INVITE then return end
+
+    StaticPopupDialogs.TRIALCHAT_GROUP_INVITE = {
+        text = "%s invites you to join the TrialChat group %s.",
+        button1 = ACCEPT,
+        button2 = DECLINE,
+        sound = SOUNDKIT.IG_PLAYER_INVITE,
+        OnAccept = function(_, invite)
+            local savedGroup = getSavedGroups()[invite.id]
+            joinGroup(invite.name, invite.password, invite.sender,
+                type(savedGroup) == "table" and savedGroup or nil)
+        end,
+        OnCancel = function(_, invite, reason)
+            -- Not when it timed out: that isn't an answer.
+            if reason == "clicked" then
+                declinedInvites[getDeclineKey(invite)] = GetTime()
+                answerInvite(invite, "declined")
+            end
+        end,
+        OnHide = function(_, invite)
+            if shownInvite == invite then
+                shownInvite = nil
+            end
+        end,
+        timeout = INVITE_POPUP_SECONDS,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+    }
+    StaticPopupDialogs.TRIALCHAT_INVITE_PLAYER = {
+        text = "Invite a player to %s:",
+        button1 = "Invite",
+        button2 = CANCEL,
+        hasEditBox = true,
+        maxLetters = 12 + 1 + 64,
+        autoCompleteSource = C_AutoComplete and C_AutoComplete.GetAutoCompleteResults,
+        autoCompleteArgs = AUTOCOMPLETE_LIST and AUTOCOMPLETE_LIST.WHISPER
+            and { AUTOCOMPLETE_LIST.WHISPER.include, AUTOCOMPLETE_LIST.WHISPER.exclude },
+        OnShow = function(popup)
+            popup:GetEditBox():SetFocus()
+        end,
+        OnAccept = function(popup, id)
+            Groups:Invite(id, popup:GetEditBox():GetText())
+        end,
+        OnHide = function(popup)
+            popup:GetEditBox():SetText("")
+        end,
+        EditBoxOnEnterPressed = function(editBox, id)
+            Groups:Invite(id, editBox:GetText())
+            editBox:GetParent():Hide()
+        end,
+        EditBoxOnEscapePressed = StaticPopup_StandardEditBoxOnEscapePressed,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        preferredIndex = 3,
+    }
+end
+
+local function receiveInvite(id, sender, body)
+    local name, password = string.match(body, "^([^:]+):(.*)$")
+    if not name or getGroupDetailsProblem(name, password)
+        or getGroupId(name) ~= id then
+        return
+    end
+    if C_FriendList and C_FriendList.IsOnIgnoredList
+        and C_FriendList.IsOnIgnoredList(sender) then
+        return
+    end
+
+    local invite = { id = id, name = name, password = password, sender = sender }
+    if activeGroups[id] or pendingJoins[id] then
+        answerInvite(invite, "member")
+        return
+    end
+    local declinedAt = declinedInvites[getDeclineKey(invite)]
+    if declinedAt and GetTime() - declinedAt < INVITE_REPEAT_SECONDS then
+        answerInvite(invite, "declined")
+        return
+    end
+    if shownInvite then
+        local isSame = shownInvite.id == id and namesMatch(shownInvite.sender, sender)
+        answerInvite(invite, isSame and "shown" or "busy")
+        return
+    end
+
+    defineInviteDialogs()
+    shownInvite = invite
+    if not StaticPopup_Show("TRIALCHAT_GROUP_INVITE", getInviterText(sender), name, invite) then
+        shownInvite = nil
+        answerInvite(invite, "busy")
+        return
+    end
+    answerInvite(invite, "shown")
+end
+
+local function receiveInviteReply(id, sender, answer)
+    local invite, index = findSentInvite(id, sender)
+    if not invite then return end
+
+    invite.answered = true
+    if answer == "shown" then return end
+    table.remove(sentInvites, index)
+    if answer == "declined" then
+        showNotice(invite.name .. " declined the invite to " .. invite.groupName .. ".")
+    elseif answer == "member" then
+        showNotice(invite.name .. " is already in " .. invite.groupName .. ".")
+    elseif answer == "busy" then
+        showNotice(invite.name .. " has another invite open. Try again in a moment.")
+    end
 end
 
 local menu
@@ -1954,6 +2116,55 @@ function Groups:Confirm(action, id)
     end
 end
 
+-- Invites a player to a connected group; what they answer is printed.
+function Groups:Invite(id, name)
+    local session = activeGroups[id]
+    if not session then return end
+    name = strtrim(name or "")
+    if name == "" or #name > 64 or string.find(name, "[%c|]") then
+        showNotice("Enter the name of the character to invite.")
+        return
+    end
+    if isSelf(name) or hasMember(session, name) then
+        showNotice((isSelf(name) and "You're" or (name .. " is"))
+            .. " already in " .. session.name .. ".")
+        return
+    end
+
+    local _, index = findSentInvite(id, name)
+    if index then
+        table.remove(sentInvites, index)
+    end
+    if not sendGroupProtocol(session, "INVITE", name,
+        session.name .. ":" .. session.password) then
+        return
+    end
+    local invite = { id = id, name = name, groupName = session.name }
+    sentInvites[#sentInvites + 1] = invite
+    showNotice("Invited " .. name .. " to " .. session.name .. ".")
+    C_Timer.After(INVITE_ANSWER_SECONDS, function()
+        local current, currentIndex = findSentInvite(id, name)
+        if current ~= invite or invite.answered then return end
+        table.remove(sentInvites, currentIndex)
+        showNotice(name .. " didn't answer the invite. They need TrialChat to get invites.")
+    end)
+    -- A declined popup can answer until it times out.
+    C_Timer.After(INVITE_ANSWER_SECONDS + INVITE_POPUP_SECONDS, function()
+        local current, currentIndex = findSentInvite(id, name)
+        if current == invite then
+            table.remove(sentInvites, currentIndex)
+        end
+    end)
+end
+
+-- Asks for the name of a player to invite to a connected group.
+function Groups:ShowInviteDialog(id)
+    local session = activeGroups[id]
+    if not session then return end
+    defineInviteDialogs()
+    StaticPopup_Show("TRIALCHAT_INVITE_PLAYER", session.name, nil, id)
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:RegisterEvent("PLAYER_LOGOUT")
@@ -2020,6 +2231,16 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
     local session = activeGroups[id]
     local pending = pendingJoins[id]
     if isSelf(sender) then return end
+
+    if kind == "INVITE" then
+        receiveInvite(id, sender, body)
+        return
+    end
+
+    if kind == "INVITEREPLY" then
+        receiveInviteReply(id, sender, body)
+        return
+    end
 
     if kind == "HELLO" then
         if session and body == session.password then
@@ -2248,3 +2469,66 @@ C_Timer.NewTicker(MEMBER_UPDATE_INTERVAL, function()
         end
     end
 end)
+
+-- "Invite to TrialChat group" in the game's right-click menus for players
+-- (unit frames, chat names, friends, guild and community lists), listing
+-- the groups you're connected to. TrialChat's own member lists open the
+-- chat name menu, so they have it too.
+local PLAYER_MENUS = {
+    "PLAYER", "PARTY", "RAID_PLAYER", "RAID", "FOCUS", "FRIEND", "GUILD",
+    "CHAT_ROSTER", "COMMUNITIES_WOW_MEMBER", "COMMUNITIES_GUILD_MEMBER",
+}
+
+local function getMenuPlayerName(contextData)
+    if type(contextData) ~= "table" or contextData.bnetIDAccount
+        or contextData.isMobile then
+        return nil
+    end
+    local unit = contextData.unit
+    if unit then
+        local isPlayer = UnitIsPlayer(unit)
+        if TrialChatCommon.IsSecret(isPlayer) or not isPlayer then return nil end
+        return TrialChatCommon.GetUnitFullName(unit)
+    end
+    local name, server = contextData.name, contextData.server
+    if type(name) ~= "string" or name == "" or TrialChatCommon.IsSecret(name, server) then
+        return nil
+    end
+    if type(server) == "string" and server ~= "" then
+        return name .. "-" .. server
+    end
+    return name
+end
+
+local function addInviteMenu(_, rootDescription, contextData)
+    local name = getMenuPlayerName(contextData)
+    if not name or isSelf(name) then return end
+
+    local sessions = {}
+    for _, session in pairs(activeGroups) do
+        sessions[#sessions + 1] = session
+    end
+    if #sessions == 0 then return end
+    table.sort(sessions, function(left, right)
+        return strlower(left.name) < strlower(right.name)
+    end)
+
+    rootDescription:CreateDivider()
+    local inviteButton = rootDescription:CreateButton("Invite to TrialChat group")
+    for _, session in ipairs(sessions) do
+        local id = session.id
+        local groupButton = inviteButton:CreateButton(session.name, function()
+            Groups:Invite(id, name)
+        end)
+        -- Greyed out for groups they're already in.
+        if hasMember(session, name) then
+            groupButton:SetEnabled(false)
+        end
+    end
+end
+
+if Menu and Menu.ModifyMenu then
+    for _, which in ipairs(PLAYER_MENUS) do
+        Menu.ModifyMenu("MENU_UNIT_" .. which, addInviteMenu)
+    end
+end
