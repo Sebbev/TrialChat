@@ -132,6 +132,14 @@ local function hideRowParts(row)
     row.showsTimeOnHover = false
 end
 
+-- Both corners of the text are anchored at its top, so only its width is
+-- fixed and it grows down as it wraps. (A RIGHT anchor would also pin its
+-- middle, which limits its height and cuts it off with "...".)
+local function placeText(row, left, top)
+    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", left, top)
+    row.text:SetPoint("TOPRIGHT", row, "TOPRIGHT", -RIGHT_PADDING, top)
+end
+
 local function initializeRow(row, element)
     if not row.text then
         createRowParts(row)
@@ -167,30 +175,28 @@ local function initializeRow(row, element)
             row.name:Show()
             row.time:SetText(element.time)
             row.time:Show()
-            text:SetPoint("TOPLEFT", row, "TOPLEFT", TEXT_LEFT, -HEADER_TOP - NAME_HEIGHT)
+            placeText(row, TEXT_LEFT, -HEADER_TOP - NAME_HEIGHT)
         else
-            text:SetPoint("TOPLEFT", row, "TOPLEFT", TEXT_LEFT, -CONTINUATION_TOP)
+            placeText(row, TEXT_LEFT, -CONTINUATION_TOP)
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
         end
-        text:SetPoint("RIGHT", row, "RIGHT", -RIGHT_PADDING, 0)
         return
     end
 
     if kind == "line" then
         text:SetJustifyH("LEFT")
         UI.SetTextColor(text, Color.text)
-        text:SetPoint("TOPLEFT", row, "TOPLEFT", SIDE_PADDING, -TEXT_BOTTOM)
+        placeText(row, SIDE_PADDING, -TEXT_BOTTOM)
     else
         text:SetJustifyH("CENTER")
         UI.SetTextColor(text, element.color or Color.emote)
-        text:SetPoint("TOPLEFT", row, "TOPLEFT", SIDE_PADDING, -CENTERED_PADDING)
+        placeText(row, SIDE_PADDING, -CENTERED_PADDING)
         if element.time then
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
         end
     end
-    text:SetPoint("RIGHT", row, "RIGHT", -RIGHT_PADDING, 0)
 end
 
 function TrialChatMessageList.Create(parent)
