@@ -68,6 +68,8 @@ local nearbyUnread = 0
 local tabButtons = {}
 local tabMeasureText
 local moreTabsButton
+local groupHistoryButton
+local groupLogRenderPending = false
 local overflowTabs = {}
 local selectTab
 local layoutTabs
@@ -700,6 +702,12 @@ layoutTabs = function()
     if selectedTab ~= NEARBY_TAB then
         nearbyCountText:SetText(selected.name)
         activeCountText:SetText("Online members (" .. selected.memberCount .. ")")
+        local loading, added = TrialChatGroups:GetHistoryLoadState(selectedTab)
+        groupHistoryButton:SetText(loading and ("Loading... " .. added) or "Load history")
+        groupHistoryButton:SetEnabled(not loading)
+        groupHistoryButton:Show()
+    else
+        groupHistoryButton:Hide()
     end
 end
 
@@ -734,6 +742,19 @@ selectTab = function(key)
     layoutTabs()
 end
 
+-- Older messages arriving in a burst (history loading) would otherwise
+-- redraw the whole log once per message.
+local function scheduleGroupLogRender()
+    if groupLogRenderPending then return end
+    groupLogRenderPending = true
+    C_Timer.After(0.3, function()
+        groupLogRenderPending = false
+        if selectedTab ~= NEARBY_TAB then
+            renderGroupLog(selectedTab)
+        end
+    end)
+end
+
 local function onGroupsChanged(kind, id, entry, appended)
     if not chatWindow then return end
 
@@ -742,7 +763,7 @@ local function onGroupsChanged(kind, id, entry, appended)
             chatLog:AddMessage(TrialChatGroups:RenderMessage(id, entry))
             chatLog:ScrollToBottom()
         else
-            renderGroupLog(id)
+            scheduleGroupLogRender()
         end
         if chatWindow:IsShown() then
             noteChatMessage()
@@ -966,6 +987,23 @@ local function createChatWindow()
     end)
     tabMeasureText = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     tabMeasureText:Hide()
+
+    groupHistoryButton = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
+    groupHistoryButton:SetSize(90, 20)
+    groupHistoryButton:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 8, -8)
+    groupHistoryButton:SetNormalFontObject("GameFontNormalSmall")
+    groupHistoryButton:SetScript("OnClick", function()
+        TrialChatGroups:LoadHistory(selectedTab)
+    end)
+    groupHistoryButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("Ask an online member for the messages you're missing,"
+            .. " up to the last " .. TrialChatGroups.MAX_HISTORY .. ".",
+            nil, nil, nil, nil, true)
+        GameTooltip:Show()
+    end)
+    groupHistoryButton:SetScript("OnLeave", GameTooltip_Hide)
+    groupHistoryButton:Hide()
 
     local resizeGrip = CreateFrame("Button", nil, chatWindow)
     resizeGrip:SetSize(16, 16)

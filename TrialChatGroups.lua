@@ -5,6 +5,10 @@ local MAX_PASSWORD_BYTES = 32
 local MAX_GROUP_MESSAGE_BYTES = 1000
 local GROUP_PART_BYTES = 180
 local MAX_HISTORY_CHUNKS = 16
+local HISTORY_PAGE_SIZE = 50
+local HISTORY_IDLE_TIMEOUT = 15
+local HISTORY_CHECK_SECONDS = 5
+local LOG_REBUILD_DELAY = 0.3
 local MAX_CHAT_HISTORY = 200
 local MAX_HISTORY_SYNC_MESSAGES = 50
 local HISTORY_CHUNK_BYTES = 170
@@ -274,6 +278,17 @@ local function rebuildGroupLog(session)
     window.log:ScrollToBottom()
 end
 
+-- Older messages arriving in a burst (history loading) would otherwise
+-- redraw the whole log once per message.
+local function scheduleGroupLogRebuild(session)
+    if session.rebuildPending then return end
+    session.rebuildPending = true
+    C_Timer.After(LOG_REBUILD_DELAY, function()
+        session.rebuildPending = nil
+        rebuildGroupLog(session)
+    end)
+end
+
 local function ensureHistoryIndex(session)
     if session.historyIds then return end
     session.historyIds = {}
@@ -374,7 +389,7 @@ local function addGroupMessage(
             session.window.log:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
             session.window.log:ScrollToBottom()
         else
-            rebuildGroupLog(session)
+            scheduleGroupLogRebuild(session)
         end
         session.window.lastMessageAt = GetTime()
         updateWindowAlpha(session.window)
@@ -403,6 +418,7 @@ local function sendHistoryEntry(session, target, entry, initialDelay)
             sendGroupProtocol(session, "HIST", target, payload)
         end)
     end
+    return chunkCount
 end
 
 sendHistoryToMember = function(session, target)
@@ -417,14 +433,42 @@ sendHistoryToMember = function(session, target)
 
     local delay = 0
     for _, entry in ipairs(entries) do
-        local serialized = TrialChatCommon.EncodeMessageMarkup(table.concat({
-            entry.id, tostring(entry.timestamp), entry.sender,
-            entry.isEmote and "E" or "M", entry.message,
-        }, ":"))
-        local chunks = math.ceil(#serialized / HISTORY_CHUNK_BYTES)
-        sendHistoryEntry(session, target, entry, delay)
-        delay = delay + chunks * 0.1
+        delay = delay + sendHistoryEntry(session, target, entry, delay) * 0.1
     end
+end
+
+-- Answers a history page request: up to a page of entries older than the
+-- requested cursor (newest page when there is none), then HISTEND with how
+-- many were sent and the oldest one, which is the cursor for the next page.
+local function sendHistoryPage(session, target, body)
+    local targetKey = normalizeName(target)
+    session.historyPagesSending = session.historyPagesSending or {}
+    if session.historyPagesSending[targetKey] then return end
+
+    local beforeTimestamp, beforeId = string.match(body or "", "^(%d+):([%x%-]+)$")
+    local cursor = beforeTimestamp
+        and { timestamp = tonumber(beforeTimestamp), id = beforeId }
+    local page = {}
+    for index = #session.history, 1, -1 do
+        local entry = session.history[index]
+        if type(entry) == "table" and (not cursor or historyLessThan(entry, cursor)) then
+            table.insert(page, 1, entry)
+            if #page >= HISTORY_PAGE_SIZE then break end
+        end
+    end
+
+    local delay = 0
+    for _, entry in ipairs(page) do
+        delay = delay + sendHistoryEntry(session, target, entry, delay) * 0.1
+    end
+    local oldest = page[1]
+    local endBody = #page .. ":"
+        .. (oldest and (oldest.timestamp .. ":" .. oldest.id) or ":")
+    session.historyPagesSending[targetKey] = true
+    C_Timer.After(delay + 0.1, function()
+        session.historyPagesSending[targetKey] = nil
+        sendGroupProtocol(session, "HISTEND", target, endBody)
+    end)
 end
 
 local pendingHistoryChunks = {}
@@ -463,8 +507,114 @@ local function receiveHistoryChunk(session, sender, body)
     timestamp = tonumber(timestamp)
     if entryId ~= messageId or not timestamp then return end
 
-    addGroupMessage(session, entrySender, message,
+    return addGroupMessage(session, entrySender, message,
         emoteFlag == "E", entryId, timestamp, true)
+end
+
+-- Loading the full history: ask one online member for their history a page
+-- at a time, newest first, until they have nothing older or ours is full.
+-- Walking all of it also fills gaps from times we were offline. Members on
+-- older versions don't answer, so after a while without progress the next
+-- online member is asked instead.
+local requestHistoryPage
+
+local function updateHistoryButton(session)
+    local button = session.window and session.window.historyButton
+    if button then
+        local load = session.historyLoad
+        button:SetText(load and ("Loading... " .. load.added) or "Load history")
+        button:SetEnabled(not load)
+    end
+    notifyChange("history", session.id)
+end
+
+local function finishHistoryLoad(session, message)
+    session.historyLoad = nil
+    updateHistoryButton(session)
+    showNotice(session.name .. ": " .. message)
+end
+
+local function useNextHistorySource(session)
+    local load = session.historyLoad
+    local candidates = {}
+    for _, member in pairs(session.members) do
+        if not isSelf(member.name) and not load.tried[normalizeName(member.name)] then
+            candidates[#candidates + 1] = member.name
+        end
+    end
+    if #candidates == 0 then
+        if load.added > 0 then
+            finishHistoryLoad(session, "loaded " .. load.added
+                .. " messages, but no other member answered for the rest.")
+        elseif next(load.tried) then
+            finishHistoryLoad(session,
+                "no member answered. They may need to update TrialChat.")
+        else
+            finishHistoryLoad(session, "no other members are online.")
+        end
+        return
+    end
+
+    table.sort(candidates, function(left, right)
+        return normalizeName(left) < normalizeName(right)
+    end)
+    load.source = candidates[1]
+    load.tried[normalizeName(load.source)] = true
+    load.cursor = nil
+    requestHistoryPage(session)
+end
+
+requestHistoryPage = function(session)
+    local load = session.historyLoad
+    load.lastActivity = GetTime()
+    local body = load.cursor
+        and (load.cursor.timestamp .. ":" .. load.cursor.id) or ""
+    sendGroupProtocol(session, "HISTREQ", load.source, body)
+end
+
+local function watchHistoryLoad(session, load)
+    C_Timer.After(HISTORY_CHECK_SECONDS, function()
+        if session.historyLoad ~= load then return end
+        if GetTime() - load.lastActivity > HISTORY_IDLE_TIMEOUT then
+            useNextHistorySource(session)
+        end
+        watchHistoryLoad(session, load)
+    end)
+end
+
+local function startHistoryLoad(session)
+    if session.historyLoad or activeGroups[session.id] ~= session then return end
+    local load = { added = 0, tried = {} }
+    session.historyLoad = load
+    updateHistoryButton(session)
+    useNextHistorySource(session)
+    if session.historyLoad == load then
+        watchHistoryLoad(session, load)
+    end
+end
+
+local function receiveHistoryPageEnd(session, sender, body)
+    local load = session.historyLoad
+    if not load or not namesMatch(load.source, sender) then return end
+    load.lastActivity = GetTime()
+
+    local count, timestamp, entryId = string.match(body, "^(%d+):(%d*):([%x%-]*)$")
+    count, timestamp = tonumber(count), tonumber(timestamp)
+    local cursor = timestamp and { timestamp = timestamp, id = entryId }
+    -- With a full history, anything older than our oldest entry would be
+    -- dropped again straight away, so there is no point asking for it.
+    local oldest = session.history[1]
+    local historyFull = cursor and #session.history >= MAX_CHAT_HISTORY
+        and type(oldest) == "table" and not historyLessThan(oldest, cursor)
+    if not count or count < HISTORY_PAGE_SIZE or not cursor or historyFull then
+        finishHistoryLoad(session, load.added > 0
+            and ("loaded " .. load.added .. " messages you were missing.")
+            or "you already have the full history.")
+        return
+    end
+
+    load.cursor = cursor
+    requestHistoryPage(session)
 end
 
 local function sendGroupMessage(session, message)
@@ -589,6 +739,22 @@ local function createGroupWindow(session)
     closeButton:SetScript("OnClick", function()
         frame:Hide()
     end)
+
+    window.historyButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    window.historyButton:SetSize(90, 20)
+    window.historyButton:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -8)
+    window.historyButton:SetNormalFontObject("GameFontNormalSmall")
+    window.historyButton:SetScript("OnClick", function()
+        startHistoryLoad(session)
+    end)
+    window.historyButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("Ask an online member for the messages you're missing,"
+            .. " up to the last " .. MAX_CHAT_HISTORY .. ".", nil, nil, nil, nil, true)
+        GameTooltip:Show()
+    end)
+    window.historyButton:SetScript("OnLeave", GameTooltip_Hide)
+    updateHistoryButton(session)
 
     window.log = CreateFrame("ScrollingMessageFrame", nil, frame)
     window.log:SetFontObject(ChatFontNormal)
@@ -1606,6 +1772,23 @@ function Groups:SendMessage(id, message)
     end
 end
 
+function Groups:LoadHistory(id)
+    local session = activeGroups[id]
+    if session then
+        startHistoryLoad(session)
+    end
+end
+
+-- Returns whether a history load is running for the group and how many
+-- messages it has added so far.
+function Groups:GetHistoryLoadState(id)
+    local session = activeGroups[id]
+    local load = session and session.historyLoad
+    return load ~= nil, load and load.added or 0
+end
+
+Groups.MAX_HISTORY = MAX_CHAT_HISTORY
+
 function Groups:OpenWindow(id)
     local session = activeGroups[id]
     if session then
@@ -1823,10 +2006,35 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
 
     if kind == "HIST" then
         if session and hasMember(session, sender) then
-            receiveHistoryChunk(session, sender, body)
+            local added, entry = receiveHistoryChunk(session, sender, body)
+            local load = session.historyLoad
+            if load and namesMatch(load.source, sender) then
+                load.lastActivity = GetTime()
+                if added then
+                    -- Messages you asked for aren't unread.
+                    entry.read = true
+                    load.added = load.added + 1
+                    updateHistoryButton(session)
+                end
+            end
         elseif pending and isJoinCandidate(pending, sender) then
             receiveHistoryChunk(pending, sender, body)
         end
+        return
+    end
+
+    if kind == "HISTREQ" then
+        if session and hasMember(session, sender) then
+            sendHistoryPage(session, sender, body)
+        end
+        return
+    end
+
+    if kind == "HISTEND" then
+        if session and hasMember(session, sender) then
+            receiveHistoryPageEnd(session, sender, body)
+        end
+        return
     end
 end)
 
