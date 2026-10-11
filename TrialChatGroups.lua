@@ -493,8 +493,12 @@ local function sendGroupMessage(session, message)
     end
 
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
-    addGroupMessage(session, sender, message, isEmote, messageId, timestamp)
+    local added, entry = addGroupMessage(
+        session, sender, message, isEmote, messageId, timestamp)
     sendToMembers(session, messageKind, body)
+    if added and not isEmote then
+        TrialChatBubbles.ShowOwnMessage(entry.message, session.name)
+    end
 end
 
 local function createGroupWindow(session)
@@ -1772,8 +1776,11 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             string.match(decodedBody, "^([%x%-]+):(%d+):([ME]):(.*)$")
         timestamp = tonumber(timestamp)
         if messageId and timestamp then
-            addGroupMessage(session, sender, text,
+            local added, entry = addGroupMessage(session, sender, text,
                 emoteFlag == "E", messageId, timestamp, false, true)
+            if added and emoteFlag ~= "E" then
+                TrialChatBubbles.ShowMessage(sender, entry.message, session.name)
+            end
         end
         return
     end
@@ -1781,8 +1788,11 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
     if (kind == "MSG" or kind == "EMOTE")
         and session and hasMember(session, sender) then
         local decodedBody = TrialChatCommon.DecodeMessageMarkup(body)
-        addGroupMessage(session, sender, decodedBody, kind == "EMOTE",
-            nil, nil, false, true)
+        local added, entry = addGroupMessage(session, sender, decodedBody,
+            kind == "EMOTE", nil, nil, false, true)
+        if added and kind == "MSG" then
+            TrialChatBubbles.ShowMessage(sender, entry.message, session.name)
+        end
         return
     end
 

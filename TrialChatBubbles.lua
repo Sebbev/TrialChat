@@ -12,6 +12,12 @@ local OWN_BUBBLE_OFFSET_Y = 3
 local OWN_BUBBLE_ZOOM_OFFSET = 480
 local OWN_BUBBLE_MIN_ZOOM = 1
 local MAX_NAMEPLATES = 40
+local DEFAULT_BUBBLE_COLOR = { r = 1, g = 1, b = 1 }
+local GROUP_BUBBLE_COLOR = { r = 0.7, g = 0.42, b = 1 }
+local GROUP_TAG_COLOR = string.format("|cff%02x%02x%02x",
+    math.floor(GROUP_BUBBLE_COLOR.r * 255 + 0.5),
+    math.floor(GROUP_BUBBLE_COLOR.g * 255 + 0.5),
+    math.floor(GROUP_BUBBLE_COLOR.b * 255 + 0.5))
 
 TrialChatBubbles = {}
 
@@ -26,6 +32,11 @@ end
 local function isOwnBubbleEnabled()
     return isBubblesEnabled()
         and not (TrialChatDB and TrialChatDB.ownChatBubble == false)
+end
+
+local function isGroupBubblesEnabled()
+    return isBubblesEnabled()
+        and not (TrialChatDB and TrialChatDB.groupChatBubbles == false)
 end
 
 -- Bubbles float in the game world, so only plain text is shown: links keep
@@ -98,12 +109,29 @@ local function createBubble(parent)
     return bubble
 end
 
-local function showBubble(bubble, text)
+-- Group chat bubbles get a purple border and tail and the group's name on
+-- top, so they can't be mistaken for nearby chat.
+local function showBubble(bubble, text, groupName)
+    local color = groupName and GROUP_BUBBLE_COLOR or DEFAULT_BUBBLE_COLOR
+    bubble:SetBorderColor(color.r, color.g, color.b)
+    bubble.Tail:SetVertexColor(color.r, color.g, color.b)
+    bubble.groupName = groupName
+
     bubble:SetScale(WorldFrame:GetEffectiveScale())
     bubble.String:SetWidth(BUBBLE_MAX_WIDTH)
+    local width = 0
+    local tag = groupName and GROUP_TAG_COLOR .. "[" .. groupName .. "]|r"
+    if tag then
+        bubble.String:SetText(tag)
+        width = bubble.String:GetUnboundedStringWidth()
+    end
     bubble.String:SetText(text)
+    width = math.max(width, bubble.String:GetUnboundedStringWidth())
+    if tag then
+        bubble.String:SetText(tag .. "\n" .. text)
+    end
     bubble.String:SetWidth(math.min(BUBBLE_MAX_WIDTH,
-        math.ceil(bubble.String:GetUnboundedStringWidth()) + BUBBLE_TEXT_PADDING))
+        math.ceil(width) + BUBBLE_TEXT_PADDING))
     bubble.fadeOut:Stop()
     bubble:SetAlpha(1)
     bubble:Show()
@@ -119,8 +147,9 @@ local function showBubble(bubble, text)
     end)
 end
 
-function TrialChatBubbles.ShowMessage(sender, message)
+function TrialChatBubbles.ShowMessage(sender, message, groupName)
     if not isBubblesEnabled() or not sender or not message then return end
+    if groupName and not isGroupBubblesEnabled() then return end
 
     local text = strtrim(toPlainText(message))
     if text == "" then return end
@@ -141,7 +170,7 @@ function TrialChatBubbles.ShowMessage(sender, message)
     bubble.unit = unit
     bubblesByUnit[unit] = bubble
 
-    showBubble(bubble, text)
+    showBubble(bubble, text, groupName)
 end
 
 -- Your own character has no nameplate and addons can't ask where it is on
@@ -162,8 +191,9 @@ local function updateOwnBubblePosition(bubble)
         OWN_BUBBLE_OFFSET_Y + OWN_BUBBLE_ZOOM_OFFSET / zoom)
 end
 
-function TrialChatBubbles.ShowOwnMessage(message)
+function TrialChatBubbles.ShowOwnMessage(message, groupName)
     if not isOwnBubbleEnabled() or not message then return end
+    if groupName and not isGroupBubblesEnabled() then return end
     if GetCameraZoom() < OWN_BUBBLE_MIN_ZOOM then return end
 
     local text = strtrim(toPlainText(message))
@@ -175,7 +205,7 @@ function TrialChatBubbles.ShowOwnMessage(message)
     end
     ownBubble.zoom = nil
     updateOwnBubblePosition(ownBubble)
-    showBubble(ownBubble, text)
+    showBubble(ownBubble, text, groupName)
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -190,7 +220,24 @@ end)
 SLASH_TRIALCHATBUBBLES1 = "/tcbubbles"
 SlashCmdList["TRIALCHATBUBBLES"] = function(msg)
     TrialChatDB = TrialChatDB or {}
-    if strlower(strtrim(msg or "")) == "self" then
+    local option = strlower(strtrim(msg or ""))
+    if option == "groups" then
+        TrialChatDB.groupChatBubbles = TrialChatDB.groupChatBubbles == false
+        if not TrialChatDB.groupChatBubbles then
+            for _, bubble in pairs(bubblesByPlate) do
+                if bubble.groupName then
+                    hideBubble(bubble)
+                end
+            end
+            if ownBubble and ownBubble.groupName then
+                hideBubble(ownBubble)
+            end
+        end
+        print("|cffff7d0a[TrialChat]|r Group chat bubbles "
+            .. (TrialChatDB.groupChatBubbles and "on" or "off") .. ".")
+        return
+    end
+    if option == "self" then
         TrialChatDB.ownChatBubble = TrialChatDB.ownChatBubble == false
         if not TrialChatDB.ownChatBubble and ownBubble then
             hideBubble(ownBubble)
