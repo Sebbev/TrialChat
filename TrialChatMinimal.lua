@@ -22,6 +22,9 @@ local PILL_GAP = 6
 local GRIP_WIDTH = 18
 local ROW_GAP = 8
 local COMPOSER_HEIGHT = 38
+-- Room between the panel's edge and what's in it.
+local PADDING = 10
+local PANEL_RADIUS = 13
 local IDLE_ALPHA = 0.45
 local RECENT_SECONDS = 7
 local UPDATE_SECONDS = 0.1
@@ -54,8 +57,9 @@ function TrialChatMinimalView.Create(controller)
 
     local frame = CreateFrame("Frame", "TrialChatMinimalFrame", UIParent)
     view.frame = frame
-    frame:SetWidth(WIDTH)
-    frame:SetHeight(COMPOSER_HEIGHT + ROW_GAP + PILL_HEIGHT)
+    frame:SetWidth(WIDTH + 2 * PADDING)
+    view.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + ROW_GAP + PILL_HEIGHT
+    frame:SetHeight(view.chromeHeight)
     frame:SetFrameStrata("MEDIUM")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -66,6 +70,10 @@ function TrialChatMinimalView.Create(controller)
     -- Everything but the messages fades back while you aren't using it.
     view.chrome = CreateFrame("Frame", nil, frame)
     view.chrome:SetAllPoints()
+    -- One rounded panel behind it all, fading with the rest.
+    view.panel = UI.CreateBox(view.chrome, { radius = PANEL_RADIUS, border = true })
+    view.panel:SetColor(Color.sidebar, 0.8)
+    view.panel:SetBorderColor(Color.white, 0.08)
     view:CreateComposer()
     view.fullButton = UI.CreateButton(view.chrome, {
         style = "hud", icon = "expand", iconSize = 13, text = "Full view",
@@ -115,14 +123,16 @@ function View:DragBy(region)
         self.moving = false
         self.movedAt = GetTime()
         self:SavePosition()
+        -- Keep it pinned by its bottom, so it grows upward with the messages.
+        self:RestorePosition()
     end)
 end
 
 function View:CreateComposer()
     local composer = CreateFrame("Frame", nil, self.chrome)
     self.composer = composer
-    composer:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", 0, 0)
-    composer:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", 0, 0)
+    composer:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, PADDING)
+    composer:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -PADDING, PADDING)
     composer:SetHeight(COMPOSER_HEIGHT)
     composer.box = UI.CreateBox(composer, { radius = COMPOSER_HEIGHT / 2, border = true })
     composer.box:SetColor(Color.sidebar, 0.88)
@@ -225,7 +235,23 @@ function View:UpdateConversations()
     for index = count + 1, #self.pills do
         self.pills[index]:Hide()
     end
-    self.frame:SetHeight(COMPOSER_HEIGHT + ROW_GAP + (row + 1) * (PILL_HEIGHT + PILL_GAP) - PILL_GAP)
+    self.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + ROW_GAP
+        + (row + 1) * (PILL_HEIGHT + PILL_GAP) - PILL_GAP
+    self:LayoutLines()
+end
+
+-- The panel reaches up to the highest message on screen.
+function View:UpdateHeight()
+    local top = self.chromeHeight
+    for _, chip in ipairs(self.chips) do
+        if chip:IsShown() and chip.top and chip.top + PADDING > top then
+            top = chip.top + PADDING
+        end
+    end
+    if self.frameHeight ~= top then
+        self.frameHeight = top
+        self.frame:SetHeight(top)
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -258,6 +284,7 @@ function View:CreateChip()
     chip.text:SetNonSpaceWrap(true)
     TrialChatMessageList.EnableLinks(chip)
     self:DragBy(chip)
+    chip:SetFrameLevel(self.chrome:GetFrameLevel() + 5)
     chip:Hide()
     self.chips[#self.chips + 1] = chip
     return chip
@@ -266,7 +293,7 @@ end
 -- The lines stack up from the conversations, the newest at the bottom; each
 -- background is as wide as its text.
 function View:LayoutLines()
-    local y = ROW_GAP
+    local y = self.chromeHeight - PADDING + ROW_GAP
     local count = #self.lines
     for rank = 1, count do
         local line = self.lines[count - rank + 1]
@@ -279,8 +306,9 @@ function View:LayoutLines()
         chip:SetSize(width + 2 * LINE_PADDING_X,
             math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y)
         chip:ClearAllPoints()
-        chip:SetPoint("BOTTOMLEFT", self.frame, "TOPLEFT", 0, y)
-        y = y + chip:GetHeight() + LINE_GAP
+        chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
+        chip.top = y + chip:GetHeight()
+        y = chip.top + LINE_GAP
     end
     for rank = count + 1, #self.chips do
         self.chips[rank].line = nil
@@ -364,6 +392,7 @@ function View:UpdateFade()
         chip:SetAlpha(alpha)
         chip:SetShown(alpha > 0)
     end
+    self:UpdateHeight()
 end
 
 ---------------------------------------------------------------------------
