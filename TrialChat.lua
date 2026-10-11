@@ -9,7 +9,8 @@ local MAX_MESSAGE_BYTES = 253
 local MAX_CHAT_MESSAGE_BYTES = 1000
 local PART_TAG = "P:"
 local NEARBY_PART_BYTES = 230
-local MAX_CHAT_HISTORY = 200
+local MAX_CHAT_HISTORY = 1000
+local VISIBLE_HISTORY = 200
 local LISTENER_TIMEOUT = 35
 local PING_INTERVAL = 30
 local PING_BUDGET = 4
@@ -69,6 +70,7 @@ local tabButtons = {}
 local tabMeasureText
 local moreTabsButton
 local groupHistoryButton
+local visibleCount = VISIBLE_HISTORY
 local groupLogRenderPending = false
 local overflowTabs = {}
 local selectTab
@@ -452,8 +454,7 @@ local function printMessage(sender, message, color, nameColor, isEmote, senderKe
             nearbyUnread = nearbyUnread + 1
             layoutTabs()
         elseif not switchedTab then
-            chatLog:AddMessage(line)
-            chatLog:ScrollToBottom()
+            TrialChatCommon.AddChatLogMessage(chatLog, line)
         end
     else
         print(line)
@@ -527,22 +528,26 @@ local function printIncomingMessage(
     end)
 end
 
-local function renderNearbyLog()
-    chatLog:Clear()
-    for _, line in ipairs(getChatHistory()) do
-        if type(line) == "string" then
-            chatLog:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
+-- Up to MAX_CHAT_HISTORY lines are stored, but only the newest visibleCount
+-- are drawn; a link on top shows older ones on request.
+local function renderNearbyLog(keepPosition)
+    local history = getChatHistory()
+    local first = math.max(1, #history - visibleCount + 1)
+    local lines = {}
+    if first > 1 then
+        lines[1] = TrialChatCommon.GetOlderMessagesLine(first - 1)
+    end
+    for index = first, #history do
+        if type(history[index]) == "string" then
+            lines[#lines + 1] = TrialChatCommon.RemovePlayerLinks(history[index])
         end
     end
-    chatLog:ScrollToBottom()
+    TrialChatCommon.SetChatLogLines(chatLog, lines, keepPosition)
 end
 
-local function renderGroupLog(id)
-    chatLog:Clear()
-    for _, line in ipairs(TrialChatGroups:GetHistoryLines(id)) do
-        chatLog:AddMessage(line)
-    end
-    chatLog:ScrollToBottom()
+local function renderGroupLog(id, keepPosition)
+    TrialChatCommon.SetChatLogLines(chatLog,
+        TrialChatGroups:GetHistoryLines(id, visibleCount), keepPosition)
 end
 
 local function getTabs()
@@ -725,6 +730,7 @@ selectTab = function(key)
     if not chatWindow then return end
 
     selectedTab = key
+    visibleCount = VISIBLE_HISTORY
     if key == NEARBY_TAB then
         nearbyUnread = 0
         if TrialChatGroups then
@@ -750,7 +756,7 @@ local function scheduleGroupLogRender()
     C_Timer.After(0.3, function()
         groupLogRenderPending = false
         if selectedTab ~= NEARBY_TAB then
-            renderGroupLog(selectedTab)
+            renderGroupLog(selectedTab, true)
         end
     end)
 end
@@ -760,8 +766,9 @@ local function onGroupsChanged(kind, id, entry, appended)
 
     if kind == "message" and id == selectedTab then
         if appended then
-            chatLog:AddMessage(TrialChatGroups:RenderMessage(id, entry))
-            chatLog:ScrollToBottom()
+            TrialChatCommon.AddChatLogMessage(chatLog,
+                TrialChatGroups:RenderMessage(id, entry),
+                TrialChatCommon.IsSelf(entry.sender))
         else
             scheduleGroupLogRender()
         end
@@ -1021,17 +1028,28 @@ local function createChatWindow()
 
     chatLog = CreateFrame("ScrollingMessageFrame", nil, chatWindow)
     chatLog:SetFontObject(ChatFontNormal)
-    chatLog:SetMaxLines(200)
+    chatLog:SetMaxLines(math.max(MAX_CHAT_HISTORY, TrialChatGroups.MAX_HISTORY) + 1)
     chatLog:SetFading(false)
     chatLog:SetJustifyH("LEFT")
     chatLog:SetHyperlinksEnabled(true)
     chatLog:EnableMouse(true)
     chatLog:SetScript("OnHyperlinkClick", function(_, link, text, button)
+        if link == "tcolder" then
+            visibleCount = visibleCount + VISIBLE_HISTORY
+            if selectedTab == NEARBY_TAB then
+                renderNearbyLog(true)
+            else
+                renderGroupLog(selectedTab, true)
+            end
+            return
+        end
         TrialChatCommon.HandleHyperlinkClick(link, text, button)
     end)
     chatLog:SetScript("OnHyperlinkEnter", function(self, link, text)
         GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT")
-        if string.sub(link or "", 1, 6) == "tcurl:" then
+        if link == "tcolder" then
+            GameTooltip:SetText("Show " .. VISIBLE_HISTORY .. " older messages")
+        elseif string.sub(link or "", 1, 6) == "tcurl:" then
             GameTooltip:SetText("Click to copy URL")
         elseif string.sub(link or "", 1, 7) == "player:"
             or string.sub(link or "", 1, 9) == "tcplayer:" then
@@ -1044,14 +1062,7 @@ local function createChatWindow()
     chatLog:SetScript("OnHyperlinkLeave", function()
         GameTooltip_Hide()
     end)
-    chatLog:EnableMouseWheel(true)
-    chatLog:SetScript("OnMouseWheel", function(self, delta)
-        if delta > 0 then
-            self:ScrollUp()
-        else
-            self:ScrollDown()
-        end
-    end)
+    TrialChatCommon.SetUpChatLog(chatLog)
     renderNearbyLog()
 
     chatInput = CreateFrame("EditBox", nil, chatWindow, "InputBoxTemplate")
@@ -1462,6 +1473,9 @@ sendTrialChatMessage = function(msg)
         selectTab(NEARBY_TAB)
     end
     printMessage(myShortName, msg, messageColor, myNameColor, isEmote)
+    if chatLog then
+        chatLog:ScrollToBottom()
+    end
     if not isEmote then
         TrialChatBubbles.ShowOwnMessage(msg)
     end

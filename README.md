@@ -19,7 +19,8 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 * **Proximity Chat:** Talk with nearby players across all character types.
 * **Chat Bubbles:** Messages from nearby players appear in speech bubbles above their heads (requires friendly player nameplates; open world only). Your own messages appear over your character too; its position is estimated from the camera, so it can be off with ActionCam or when the camera is pushed in by walls. Group chat messages get a purple bubble with the group's name.
 * **Permanent Listeners:** Add permanently active listeners to stay in touch even when you travel to different zones.
-* **Group Chat:** Full group chat functionality, including **chat history synchronization** between all group members. Click **Load history** in a group to fetch any messages you're missing, up to the last 200.
+* **Group Chat:** Full group chat functionality, including **chat history synchronization** between all group members. Click **Load history** in a group to fetch any messages you're missing, up to the last 2000.
+* **Chat History:** Groups keep their last 2000 messages and nearby chat its last 1000; the window shows the newest 200, with a link at the top to show older ones. While you're scrolled up reading, new messages don't pull you down; a **New messages** button takes you back.
 * **Chat Tabs:** The TrialChat window has a tab for nearby chat and one for each connected group, showing how many unread messages each has (including ones you missed while offline). Right-click a group tab to open it in its own window.
 * **Long Messages:** Nearby and group messages can be up to 1000 bytes; longer ones are sent in parts and joined back together (players on older versions won't see them).
 * **Sound Notifications:** Never miss a message with integrated group chat audio alerts.

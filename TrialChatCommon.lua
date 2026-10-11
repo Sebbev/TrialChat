@@ -539,6 +539,68 @@ function TrialChatCommon.PerformEmote(token, target)
     C_ChatInfo.PerformEmote(token, target)
 end
 
+-- Chat logs: stay where you are while you're scrolled up reading older
+-- messages (the log keeps its place when lines are added), and show a
+-- "New messages" button instead of jumping to the bottom.
+function TrialChatCommon.SetUpChatLog(log)
+    local newMessagesButton = CreateFrame(
+        "Button", nil, log:GetParent(), "UIPanelButtonTemplate")
+    newMessagesButton:SetSize(110, 18)
+    newMessagesButton:SetPoint("BOTTOM", log, "BOTTOM", 0, 2)
+    newMessagesButton:SetFrameLevel(log:GetFrameLevel() + 5)
+    newMessagesButton:SetNormalFontObject("GameFontNormalSmall")
+    newMessagesButton:SetText("New messages")
+    newMessagesButton:SetScript("OnClick", function()
+        log:ScrollToBottom()
+    end)
+    newMessagesButton:Hide()
+    log.newMessagesButton = newMessagesButton
+
+    log:SetOnScrollChangedCallback(function(_, offset)
+        if offset == 0 then
+            newMessagesButton:Hide()
+        end
+    end)
+    log:EnableMouseWheel(true)
+    log:SetScript("OnMouseWheel", function(self, delta)
+        if delta > 0 then
+            self:ScrollUp()
+        else
+            self:ScrollDown()
+        end
+    end)
+end
+
+function TrialChatCommon.AddChatLogMessage(log, line, scrollToBottom)
+    log:AddMessage(line)
+    if scrollToBottom then
+        log:ScrollToBottom()
+    elseif not log:AtBottom() and log.newMessagesButton then
+        log.newMessagesButton:Show()
+    end
+end
+
+-- Replaces everything in a chat log. With keepPosition, a reader who has
+-- scrolled up stays the same distance from the bottom.
+function TrialChatCommon.SetChatLogLines(log, lines, keepPosition)
+    local offset = keepPosition and log:GetScrollOffset() or 0
+    log:Clear()
+    for _, line in ipairs(lines) do
+        log:AddMessage(line)
+    end
+    if offset > 0 then
+        log:SetScrollOffset(offset)
+    else
+        log:ScrollToBottom()
+    end
+end
+
+-- First line of a chat log that holds more stored messages than it shows.
+function TrialChatCommon.GetOlderMessagesLine(hiddenCount)
+    return "|cff9d9d9d|Htcolder|h[Show older messages (" .. hiddenCount
+        .. " more)]|h|r"
+end
+
 local FADE_IN_PER_SECOND = 4
 local FADE_OUT_PER_SECOND = 1.5
 local fadingFrames = {}

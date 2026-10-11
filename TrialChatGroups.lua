@@ -9,7 +9,8 @@ local HISTORY_PAGE_SIZE = 50
 local HISTORY_IDLE_TIMEOUT = 15
 local HISTORY_CHECK_SECONDS = 5
 local LOG_REBUILD_DELAY = 0.3
-local MAX_CHAT_HISTORY = 200
+local MAX_CHAT_HISTORY = 2000
+local VISIBLE_HISTORY = 200
 local MAX_HISTORY_SYNC_MESSAGES = 50
 local HISTORY_CHUNK_BYTES = 170
 local MEMBER_TIMEOUT = 90
@@ -255,9 +256,17 @@ local function renderGroupMessage(session, entry)
     return timestamp .. senderText .. ": " .. displayMessage
 end
 
-local function getHistoryLines(session)
+-- Up to MAX_CHAT_HISTORY messages are stored, but only the newest
+-- visibleCount are drawn; a link on top shows older ones on request.
+local function getHistoryLines(session, visibleCount)
+    local history = session.history or {}
+    local first = math.max(1, #history - (visibleCount or VISIBLE_HISTORY) + 1)
     local lines = {}
-    for _, item in ipairs(session.history or {}) do
+    if first > 1 then
+        lines[1] = TrialChatCommon.GetOlderMessagesLine(first - 1)
+    end
+    for index = first, #history do
+        local item = history[index]
         local line = type(item) == "table"
             and renderGroupMessage(session, item) or item
         if type(line) == "string" then
@@ -267,15 +276,12 @@ local function getHistoryLines(session)
     return lines
 end
 
-local function rebuildGroupLog(session)
+local function rebuildGroupLog(session, keepPosition)
     local window = session.window
     if not window then return end
 
-    window.log:Clear()
-    for _, line in ipairs(getHistoryLines(session)) do
-        window.log:AddMessage(line)
-    end
-    window.log:ScrollToBottom()
+    TrialChatCommon.SetChatLogLines(window.log,
+        getHistoryLines(session, window.visibleCount), keepPosition)
 end
 
 -- Older messages arriving in a burst (history loading) would otherwise
@@ -285,7 +291,7 @@ local function scheduleGroupLogRebuild(session)
     session.rebuildPending = true
     C_Timer.After(LOG_REBUILD_DELAY, function()
         session.rebuildPending = nil
-        rebuildGroupLog(session)
+        rebuildGroupLog(session, true)
     end)
 end
 
@@ -386,8 +392,8 @@ local function addGroupMessage(
     if session.window and insertAt then
         if insertAt == #session.history then
             local line = renderGroupMessage(session, entry)
-            session.window.log:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
-            session.window.log:ScrollToBottom()
+            TrialChatCommon.AddChatLogMessage(session.window.log,
+                TrialChatCommon.RemovePlayerLinks(line), isSelf(sender))
         else
             scheduleGroupLogRebuild(session)
         end
@@ -758,17 +764,25 @@ local function createGroupWindow(session)
 
     window.log = CreateFrame("ScrollingMessageFrame", nil, frame)
     window.log:SetFontObject(ChatFontNormal)
-    window.log:SetMaxLines(200)
+    window.log:SetMaxLines(MAX_CHAT_HISTORY + 1)
     window.log:SetFading(false)
     window.log:SetJustifyH("LEFT")
     window.log:SetHyperlinksEnabled(true)
     window.log:EnableMouse(true)
     window.log:SetScript("OnHyperlinkClick", function(_, link, text, button)
+        if link == "tcolder" then
+            window.visibleCount = (window.visibleCount or VISIBLE_HISTORY)
+                + VISIBLE_HISTORY
+            rebuildGroupLog(session, true)
+            return
+        end
         TrialChatCommon.HandleHyperlinkClick(link, text, button)
     end)
     window.log:SetScript("OnHyperlinkEnter", function(self, link, text)
         GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT")
-        if string.sub(link or "", 1, 6) == "tcurl:" then
+        if link == "tcolder" then
+            GameTooltip:SetText("Show " .. VISIBLE_HISTORY .. " older messages")
+        elseif string.sub(link or "", 1, 6) == "tcurl:" then
             GameTooltip:SetText("Click to copy URL")
         elseif string.sub(link or "", 1, 7) == "player:"
             or string.sub(link or "", 1, 9) == "tcplayer:" then
@@ -781,18 +795,8 @@ local function createGroupWindow(session)
     window.log:SetScript("OnHyperlinkLeave", function()
         GameTooltip_Hide()
     end)
-    window.log:EnableMouseWheel(true)
-    window.log:SetScript("OnMouseWheel", function(self, delta)
-        if delta > 0 then
-            self:ScrollUp()
-        else
-            self:ScrollDown()
-        end
-    end)
-    for _, line in ipairs(getHistoryLines(session)) do
-        window.log:AddMessage(line)
-    end
-    window.log:ScrollToBottom()
+    TrialChatCommon.SetUpChatLog(window.log)
+    TrialChatCommon.SetChatLogLines(window.log, getHistoryLines(session))
     window.log:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -58)
     window.log:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -14, 48)
 
@@ -970,6 +974,13 @@ local function createGroupWindow(session)
         window:UpdateMembers()
         markGroupRead(session)
         notifyChange("unread", session.id)
+        -- Reopened windows start at the newest messages again.
+        if window.visibleCount then
+            window.visibleCount = nil
+            rebuildGroupLog(session)
+        else
+            window.log:ScrollToBottom()
+        end
     end)
     frame:HookScript("OnHide", function()
         memberPanel:Hide()
@@ -1745,10 +1756,12 @@ function Groups:GetTotalUnreadCount()
     return count
 end
 
-function Groups:GetHistoryLines(id)
+function Groups:GetHistoryLines(id, visibleCount)
     local session = activeGroups[id]
-    return session and getHistoryLines(session) or {}
+    return session and getHistoryLines(session, visibleCount) or {}
 end
+
+Groups.VISIBLE_HISTORY = VISIBLE_HISTORY
 
 function Groups:RenderMessage(id, entry)
     local session = activeGroups[id]
