@@ -232,6 +232,19 @@ eventFrame:SetScript("OnEvent", function(_, _, unit)
     end
 end)
 
+-- option is nil for chat bubbles in general, or "self" or "groups" like
+-- /tcbubbles (their own setting, which only matters while bubbles are on);
+-- turning them on and off goes through /tcbubbles as well.
+function TrialChatBubbles.IsEnabled(option)
+    if option == "self" then
+        return not (TrialChatDB and TrialChatDB.ownChatBubble == false)
+    end
+    if option == "groups" then
+        return not (TrialChatDB and TrialChatDB.groupChatBubbles == false)
+    end
+    return isBubblesEnabled()
+end
+
 SLASH_TRIALCHATBUBBLES1 = "/tcbubbles"
 SlashCmdList["TRIALCHATBUBBLES"] = function(msg)
     TrialChatDB = TrialChatDB or {}
