@@ -6,6 +6,9 @@ local PING = "C:PING"
 local PONG = "C:PONG"
 local CLASS_TAG = "C:CLASS:"
 local MAX_MESSAGE_BYTES = 253
+local MAX_CHAT_MESSAGE_BYTES = 1000
+local PART_TAG = "P:"
+local NEARBY_PART_BYTES = 230
 local MAX_CHAT_HISTORY = 200
 local LISTENER_TIMEOUT = 35
 local PING_INTERVAL = 30
@@ -17,6 +20,7 @@ if not C_ChatInfo.RegisterAddonMessagePrefix(PREFIX) then
 end
 
 local activeListeners = {}
+local incomingParts = TrialChatCommon.NewPartCollector()
 local lastPingAt = {}
 local pendingPings = {}
 local pendingIncomingMessages = {}
@@ -719,7 +723,7 @@ selectTab = function(key)
             TrialChatGroups:SetViewedGroup(nil)
         end
         renderNearbyLog()
-        chatInput:SetMaxLetters(MAX_MESSAGE_BYTES)
+        chatInput:SetMaxLetters(MAX_CHAT_MESSAGE_BYTES)
     else
         TrialChatGroups:SetViewedGroup(chatWindow:IsShown() and key or nil)
         renderGroupLog(key)
@@ -1014,7 +1018,7 @@ local function createChatWindow()
 
     chatInput = CreateFrame("EditBox", nil, chatWindow, "InputBoxTemplate")
     chatInput:SetAutoFocus(false)
-    chatInput:SetMaxLetters(MAX_MESSAGE_BYTES)
+    chatInput:SetMaxLetters(MAX_CHAT_MESSAGE_BYTES)
     TrialChatCommon.RegisterLinkInput(chatInput)
     chatInput:HookScript("OnEditFocusGained", updateChatWindowAlpha)
     chatInput:HookScript("OnEditFocusLost", updateChatWindowAlpha)
@@ -1209,6 +1213,14 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
         return
     end
 
+    if string.sub(message, 1, #PART_TAG) == PART_TAG then
+        local partId, index, count, chunk =
+            string.match(message, "^P:(%x+):(%d+):(%d+):(.*)$")
+        message = incomingParts:Add(normalizeCharacterName(sender),
+            partId, tonumber(index), tonumber(count), chunk)
+        if not message then return end
+    end
+
     local messageTag = string.sub(message, 1, #EMOTE_TAG) == EMOTE_TAG
         and EMOTE_TAG or MESSAGE_TAG
     if string.sub(message, 1, #messageTag) ~= messageTag then return end
@@ -1307,9 +1319,9 @@ sendTrialChatMessage = function(msg)
         return
     end
 
-    if #msg > MAX_MESSAGE_BYTES then
+    if #msg > MAX_CHAT_MESSAGE_BYTES then
         showTrialChatNotice("|cffff3333[TrialChat] Message is too long (maximum "
-            .. MAX_MESSAGE_BYTES .. " bytes).|r")
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).|r")
         return
     end
 
@@ -1321,18 +1333,24 @@ sendTrialChatMessage = function(msg)
         showTrialChatNotice("|cffff3333[TrialChat] Enter the text for your emote.|r")
         return
     end
-    if #msg > MAX_MESSAGE_BYTES then
+    if #msg > MAX_CHAT_MESSAGE_BYTES then
         showTrialChatNotice("|cffff3333[TrialChat] Message is too long (maximum "
-            .. MAX_MESSAGE_BYTES .. " bytes).|r")
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).|r")
         return
     end
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
     local payload = (isEmote and EMOTE_TAG or MESSAGE_TAG)
         .. TrialChatCommon.EncodeMessageMarkup(msg)
+    -- Too long for one addon message: send it in parts the receiver joins.
+    local packets = { payload }
     if #payload > 255 then
-        showTrialChatNotice(
-            "|cffff3333[TrialChat] This message is too long to send with its links.|r")
-        return
+        local partId = TrialChatCommon.NewPartId()
+        local parts = TrialChatCommon.SplitIntoParts(payload, NEARBY_PART_BYTES)
+        packets = {}
+        for index, part in ipairs(parts) do
+            packets[index] = PART_TAG .. partId .. ":" .. index .. ":"
+                .. #parts .. ":" .. part
+        end
     end
     local classPayload = playerClass and RAID_CLASS_COLORS[playerClass]
         and CLASS_TAG .. playerClass or nil
@@ -1346,7 +1364,9 @@ sendTrialChatMessage = function(msg)
         if classPayload then
             C_ChatInfo.SendAddonMessage(PREFIX, classPayload, groupChannel)
         end
-        C_ChatInfo.SendAddonMessage(PREFIX, payload, groupChannel)
+        for _, packet in ipairs(packets) do
+            C_ChatInfo.SendAddonMessage(PREFIX, packet, groupChannel)
+        end
     end
 
     local sendTargets = {}
@@ -1388,7 +1408,9 @@ sendTrialChatMessage = function(msg)
                     C_ChatInfo.SendAddonMessage(PREFIX, classPayload, "WHISPER", targetPlayer)
                 end
             end
-            C_ChatInfo.SendAddonMessage(PREFIX, payload, "WHISPER", targetPlayer)
+            for _, packet in ipairs(packets) do
+                C_ChatInfo.SendAddonMessage(PREFIX, packet, "WHISPER", targetPlayer)
+            end
             sentWhisperCount = sentWhisperCount + 1
         end
     end

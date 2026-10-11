@@ -1,4 +1,5 @@
 local BUBBLE_MAX_WIDTH = 220
+local BUBBLE_MAX_TEXT_BYTES = 250
 local BUBBLE_TEXT_PADDING = 9
 local BUBBLE_OFFSET_Y = 25
 local BUBBLE_TAIL_SIZE = 16
@@ -50,6 +51,18 @@ local function toPlainText(text)
     text = string.gsub(text, "|[TAK].-|[tak]", "")
     text = string.gsub(text, "|", "||")
     return (string.gsub(text, "\1", "||"))
+end
+
+-- Long messages are shortened in the bubble; the chat window shows them in
+-- full. The cut never splits a UTF-8 character or an escaped "||".
+local function shortenForBubble(text)
+    if #text <= BUBBLE_MAX_TEXT_BYTES then return text end
+    text = string.sub(text, 1, BUBBLE_MAX_TEXT_BYTES)
+    text = string.gsub(text, "[\192-\255][\128-\191]*$", "")
+    if #string.match(text, "|*$") % 2 == 1 then
+        text = string.sub(text, 1, -2)
+    end
+    return text .. "..."
 end
 
 local function findNamePlateUnit(sender)
@@ -153,6 +166,7 @@ function TrialChatBubbles.ShowMessage(sender, message, groupName)
 
     local text = strtrim(toPlainText(message))
     if text == "" then return end
+    text = shortenForBubble(text)
 
     local unit = findNamePlateUnit(sender)
     local plate = unit and C_NamePlate.GetNamePlateForUnit(unit)
@@ -198,6 +212,7 @@ function TrialChatBubbles.ShowOwnMessage(message, groupName)
 
     local text = strtrim(toPlainText(message))
     if text == "" then return end
+    text = shortenForBubble(text)
 
     if not ownBubble then
         ownBubble = createBubble(WorldFrame)

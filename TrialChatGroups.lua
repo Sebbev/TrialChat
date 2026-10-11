@@ -2,7 +2,9 @@ local PREFIX = "TrialChat"
 local GROUP_TAG = "TCG1|"
 local MAX_GROUP_NAME_BYTES = 24
 local MAX_PASSWORD_BYTES = 32
-local MAX_GROUP_MESSAGE_BYTES = 190
+local MAX_GROUP_MESSAGE_BYTES = 1000
+local GROUP_PART_BYTES = 180
+local MAX_HISTORY_CHUNKS = 16
 local MAX_CHAT_HISTORY = 200
 local MAX_HISTORY_SYNC_MESSAGES = 50
 local HISTORY_CHUNK_BYTES = 170
@@ -14,6 +16,7 @@ TrialChatGroups = Groups
 
 local activeGroups = {}
 local pendingJoins = {}
+local groupParts = TrialChatCommon.NewPartCollector()
 local pendingGroupSaves = {}
 local GROUP_SAVE_INTERVAL = 5
 local selfName = TrialChatCommon.GetPlayerFullName()
@@ -431,7 +434,7 @@ local function receiveHistoryChunk(session, sender, body)
     chunkIndex = tonumber(chunkIndex)
     chunkCount = tonumber(chunkCount)
     if not messageId or not chunkIndex or not chunkCount
-        or chunkCount < 1 or chunkCount > 8
+        or chunkCount < 1 or chunkCount > MAX_HISTORY_CHUNKS
         or chunkIndex < 1 or chunkIndex > chunkCount then
         return
     end
@@ -490,15 +493,20 @@ local function sendGroupMessage(session, message)
     }, ":")
     local encodedBody = TrialChatCommon.EncodeMessageMarkup(body)
     local payload = GROUP_TAG .. messageKind .. "|" .. session.id .. "|" .. encodedBody
-    if #payload > 255 then
-        showNotice("That message is too long for the addon chat protocol.")
-        return
-    end
 
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
     local added, entry = addGroupMessage(
         session, sender, message, isEmote, messageId, timestamp)
-    sendToMembers(session, messageKind, body)
+    if #payload <= 255 then
+        sendToMembers(session, messageKind, body)
+    else
+        -- Too long for one addon message: send it in parts the members join.
+        local parts = TrialChatCommon.SplitIntoParts(encodedBody, GROUP_PART_BYTES)
+        for index, part in ipairs(parts) do
+            sendToMembers(session, "PART",
+                messageId .. ":" .. index .. ":" .. #parts .. ":" .. part)
+        end
+    end
     if added and not isEmote then
         TrialChatBubbles.ShowOwnMessage(entry.message, session.name)
     end
@@ -1773,6 +1781,15 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
                 or (savedGroup and savedGroup.name) or id) .. ".")
         end
         return
+    end
+
+    if kind == "PART" and session and hasMember(session, sender) then
+        local messageId, index, count, chunk =
+            string.match(body, "^([%x%-]+):(%d+):(%d+):(.*)$")
+        body = groupParts:Add(id .. "\0" .. normalizeName(sender),
+            messageId, tonumber(index), tonumber(count), chunk)
+        if not body then return end
+        kind = "MSG2"
     end
 
     if (kind == "MSG2" or kind == "EMOTE2")

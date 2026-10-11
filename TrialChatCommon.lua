@@ -186,6 +186,97 @@ function TrialChatCommon.DecodeMessageMarkup(text)
     end))
 end
 
+-- Messages longer than one addon message (255 bytes) are sent in numbered
+-- parts and put back together by the receiver.
+local MAX_MESSAGE_PARTS = 16
+local MAX_PENDING_PER_SENDER = 4
+local PART_TIMEOUT_SECONDS = 30
+
+function TrialChatCommon.SplitIntoParts(text, partBytes)
+    local parts = {}
+    for start = 1, #text, partBytes do
+        parts[#parts + 1] = string.sub(text, start, start + partBytes - 1)
+    end
+    return parts
+end
+
+function TrialChatCommon.NewPartId()
+    return string.format("%06x", math.random(0, 0xffffff))
+end
+
+function TrialChatCommon.NewPartCollector()
+    local pendingBySender = {}
+    local lastSweepAt = 0
+    local collector = {}
+
+    local function sweepExpired(now)
+        lastSweepAt = now
+        for senderKey, pending in pairs(pendingBySender) do
+            for id, message in pairs(pending) do
+                if now - message.startedAt > PART_TIMEOUT_SECONDS then
+                    pending[id] = nil
+                end
+            end
+            if not next(pending) then
+                pendingBySender[senderKey] = nil
+            end
+        end
+    end
+
+    -- Returns the whole text once every part has arrived, otherwise nil.
+    function collector:Add(senderKey, partId, index, count, chunk)
+        if not senderKey or not partId or not index or not count or not chunk
+            or count < 2 or count > MAX_MESSAGE_PARTS
+            or index < 1 or index > count then
+            return nil
+        end
+
+        local now = GetTime()
+        if now - lastSweepAt > PART_TIMEOUT_SECONDS then
+            sweepExpired(now)
+        end
+        local pending = pendingBySender[senderKey] or {}
+        pendingBySender[senderKey] = pending
+        local oldestId, oldestTime, pendingCount = nil, nil, 0
+        for id, message in pairs(pending) do
+            if now - message.startedAt > PART_TIMEOUT_SECONDS then
+                pending[id] = nil
+            else
+                pendingCount = pendingCount + 1
+                if not oldestTime or message.startedAt < oldestTime then
+                    oldestId, oldestTime = id, message.startedAt
+                end
+            end
+        end
+
+        local message = pending[partId]
+        if not message then
+            if pendingCount >= MAX_PENDING_PER_SENDER then
+                pending[oldestId] = nil
+            end
+            message = { count = count, chunks = {}, received = 0, startedAt = now }
+            pending[partId] = message
+        elseif message.count ~= count then
+            pending[partId] = nil
+            return nil
+        end
+
+        if not message.chunks[index] then
+            message.chunks[index] = chunk
+            message.received = message.received + 1
+        end
+        if message.received < count then return nil end
+
+        pending[partId] = nil
+        if not next(pending) then
+            pendingBySender[senderKey] = nil
+        end
+        return table.concat(message.chunks)
+    end
+
+    return collector
+end
+
 local function encodeLinkPayload(text)
     return (string.gsub(text, ".", function(char)
         return string.format("%02x", string.byte(char))
@@ -226,7 +317,7 @@ function TrialChatCommon.FormatMessageText(text)
 
     while position <= #text do
         local namedColorLinkStart, namedColorLinkEnd =
-            string.find(text, "|cn[%a]+%d+:|H[^|]+|h[^|]*|h|r", position)
+            string.find(text, "^|cn[%a]+%d+:|H[^|]+|h[^|]*|h|r", position)
         if namedColorLinkStart ~= position then
             namedColorLinkStart = nil
         end
@@ -251,8 +342,7 @@ function TrialChatCommon.FormatMessageText(text)
                 result[#result + 1] = "||"
                 position = position + 2
             else
-                local remainder = string.sub(text, position)
-                local url = string.match(remainder, "^https?://[^%s<>\"|]+")
+                local url = string.match(text, "^https?://[^%s<>\"|]+", position)
                 if url then
                     url = string.gsub(url, "[.,!?;:)]+$", "")
                 end
