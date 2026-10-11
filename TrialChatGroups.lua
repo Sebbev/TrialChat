@@ -213,6 +213,16 @@ local function sendToMembers(session, kind, body, exceptName)
     return sent
 end
 
+-- Your race and gender as "Race:sex" (2 male, 3 female), so members far away
+-- can show your race portrait.
+local function getOwnLook()
+    local _, raceFile = UnitRace("player")
+    local sex = UnitSex("player")
+    if raceFile and (sex == 2 or sex == 3) then
+        return raceFile .. ":" .. sex
+    end
+end
+
 local function updateWindowAlpha(window)
     if not window or not window.frame then return end
 
@@ -1100,6 +1110,9 @@ local function completePendingJoin(session, sender)
     addMember(session, sender)
     activateGroup(session)
     sendToMembers(session, "MEMBER", selfName or UnitName("player"))
+    if getOwnLook() then
+        sendToMembers(session, "LOOK", getOwnLook())
+    end
     sendHistoryToMember(session, sender)
 end
 
@@ -1723,8 +1736,8 @@ Groups.MAX_HISTORY = MAX_CHAT_HISTORY
 -- (a group connected, went away, or started or stopped connecting), "open"
 -- (show this group: you created or joined it, or asked for it again),
 -- "members", "unread", "history" (a history load started, progressed or
--- finished), or "message" (followed by the history entry and whether it
--- was appended at the end).
+-- finished), "look" (a member's race or gender came in), or "message"
+-- (followed by the history entry and whether it was appended at the end).
 function Groups:SetChangeHandler(handler)
     changeHandler = handler
 end
@@ -2084,6 +2097,19 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
         return
     end
 
+    -- Race and gender, for the avatar of members the game can't draw.
+    if kind == "LOOK" then
+        if session and hasMember(session, sender) then
+            local raceFile, sex = string.match(body, "^(%a+):([23])$")
+            local oldRace, oldSex = TrialChatCommon.GetKnownLook(sender)
+            TrialChatCommon.RememberLook(sender, raceFile, sex, true)
+            if raceFile and (raceFile ~= oldRace or tonumber(sex) ~= oldSex) then
+                notifyChange("look", id)
+            end
+        end
+        return
+    end
+
     if kind == "BYE" then
         if session and hasMember(session, sender) then
             removeMember(session, sender)
@@ -2200,6 +2226,9 @@ C_Timer.NewTicker(MEMBER_UPDATE_INTERVAL, function()
         sendToMembers(session, "MEMBER", selfName or UnitName("player"))
         if playerClass then
             sendToMembers(session, "CLASS", playerClass)
+        end
+        if getOwnLook() then
+            sendToMembers(session, "LOOK", getOwnLook())
         end
 
         local expired = {}

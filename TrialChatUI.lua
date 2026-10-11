@@ -335,14 +335,65 @@ function UI.SetDot(dot, online)
     UI.Tint(dot, online and Color.online or Color.offline)
 end
 
-local function setAvatarPerson(avatar, name, color)
-    avatar.letter:SetText(UI.FirstLetter(name))
-    UI.SetTextColor(avatar.letter, color)
-    UI.Tint(avatar.ring, color)
+-- Race portraits are atlases named after the race and gender. Their names
+-- aren't documented, so the likely ones are tried until one exists.
+local RACE_ATLAS_NAMES = {
+    Scourge = "undead",
+    HighmountainTauren = "highmountain",
+    LightforgedDraenei = "lightforged",
+    ZandalariTroll = "zandalari",
+    EarthenDwarf = "earthen",
+}
+local RACE_ATLAS_PREFIXES = { "raceicon128-", "raceicon-" }
+local raceAtlases = {}
+
+function UI.GetRaceAtlas(raceFile, sex)
+    if type(raceFile) ~= "string" or not (C_Texture and C_Texture.GetAtlasInfo) then
+        return nil
+    end
+    local gender = sex == 3 and "female" or "male"
+    local key = raceFile .. "-" .. gender
+    if raceAtlases[key] == nil then
+        raceAtlases[key] = false
+        local names = { strlower(raceFile) }
+        if RACE_ATLAS_NAMES[raceFile] then
+            table.insert(names, 1, RACE_ATLAS_NAMES[raceFile])
+        end
+        for _, prefix in ipairs(RACE_ATLAS_PREFIXES) do
+            for _, name in ipairs(names) do
+                local atlas = prefix .. name .. "-" .. gender
+                if not raceAtlases[key] and C_Texture.GetAtlasInfo(atlas) then
+                    raceAtlases[key] = atlas
+                end
+            end
+        end
+    end
+    return raceAtlases[key] or nil
 end
 
--- A round avatar: the first letter of the name inside a ring, both in the
--- player's class color.
+-- Shows the player's portrait when the game can draw it, their race's
+-- portrait when it knows their race, and otherwise their first letter.
+local function setAvatarPerson(avatar, fullName, color)
+    UI.Tint(avatar.ring, color)
+    local unit = TrialChatCommon.FindUnit(fullName)
+    local atlas
+    if not unit then
+        atlas = UI.GetRaceAtlas(TrialChatCommon.GetKnownLook(fullName))
+    end
+    avatar.portrait:SetShown(unit ~= nil)
+    avatar.face:SetShown(atlas ~= nil)
+    avatar.letter:SetShown(not unit and not atlas)
+    if unit then
+        SetPortraitTexture(avatar.portrait, unit)
+    elseif atlas then
+        avatar.face:SetAtlas(atlas)
+    else
+        avatar.letter:SetText(UI.FirstLetter(TrialChatCommon.ShortName(fullName)))
+        UI.SetTextColor(avatar.letter, color)
+    end
+end
+
+-- A round avatar inside a ring in the player's class color.
 function UI.CreateAvatar(parent, size)
     local avatar = CreateFrame("Button", nil, parent)
     avatar:SetSize(size, size)
@@ -350,10 +401,24 @@ function UI.CreateAvatar(parent, size)
     avatar.fill:SetAllPoints()
     avatar.fill:SetTexture(MEDIA .. "disc.tga")
     UI.Tint(avatar.fill, Color.avatar)
-    avatar.ring = avatar:CreateTexture(nil, "BORDER")
+
+    -- Pictures fill the inside of the ring; the game rounds portraits itself.
+    local inner = size - 4
+    avatar.portrait = avatar:CreateTexture(nil, "ARTWORK")
+    avatar.portrait:SetSize(inner, inner)
+    avatar.portrait:SetPoint("CENTER")
+    avatar.face = avatar:CreateTexture(nil, "ARTWORK")
+    avatar.face:SetSize(inner, inner)
+    avatar.face:SetPoint("CENTER")
+    local mask = avatar:CreateMaskTexture()
+    mask:SetTexture(MEDIA .. "disc.tga", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    mask:SetAllPoints(avatar.face)
+    avatar.face:AddMaskTexture(mask)
+
+    avatar.ring = avatar:CreateTexture(nil, "OVERLAY")
     avatar.ring:SetAllPoints()
     avatar.ring:SetTexture(MEDIA .. "ring.tga")
-    avatar.letter = UI.CreateText(avatar, UI.Font.initials)
+    avatar.letter = UI.CreateText(avatar, UI.Font.initials, nil, "OVERLAY")
     avatar.letter:SetPoint("CENTER", avatar, "CENTER", 1, 0)
     avatar.SetPerson = setAvatarPerson
     return avatar

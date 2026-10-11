@@ -1093,6 +1093,8 @@ local function onGroupsChange(kind, id, entry, appended)
         scheduleRefresh("header", updateHeader)
         if kind == "members" then
             scheduleRefresh("members", updateMembers)
+        elseif kind == "look" then
+            scheduleRefresh("avatars", function() messageList:RefreshAvatars() end)
         end
     end
     scheduleRefresh("conversations", updateConversations)
