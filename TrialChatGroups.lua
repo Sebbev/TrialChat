@@ -8,14 +8,11 @@ local MAX_HISTORY_CHUNKS = 16
 local HISTORY_PAGE_SIZE = 50
 local HISTORY_IDLE_TIMEOUT = 15
 local HISTORY_CHECK_SECONDS = 5
-local LOG_REBUILD_DELAY = 0.3
 local MAX_CHAT_HISTORY = 2000
-local VISIBLE_HISTORY = 200
 local MAX_HISTORY_SYNC_MESSAGES = 50
 local HISTORY_CHUNK_BYTES = 170
 local MEMBER_TIMEOUT = 90
 local MEMBER_UPDATE_INTERVAL = 30
-local MESSAGE_VISIBLE_SECONDS = 7
 local Groups = {}
 TrialChatGroups = Groups
 
@@ -100,7 +97,6 @@ end
 
 local function isGroupViewed(session)
     return viewedGroupId == session.id
-        or (session.window ~= nil and session.window.frame:IsShown())
 end
 
 local function markGroupRead(session)
@@ -143,9 +139,6 @@ local function addMember(session, name, classFile)
         lastSeen = GetTime(),
         classFile = classFile,
     }
-    if session.window then
-        session.window:UpdateMembers()
-    end
     if activeGroups[session.id] == session and saveGroup then
         saveGroup(session)
     end
@@ -171,9 +164,6 @@ local function removeMember(session, name)
         if mostRecentMember then
             session.reconnectName = mostRecentMember.name
         end
-    end
-    if session.window then
-        session.window:UpdateMembers()
     end
     if activeGroups[session.id] == session and saveGroup then
         saveGroup(session)
@@ -223,22 +213,6 @@ local function getOwnLook()
     end
 end
 
-local function updateWindowAlpha(window)
-    if not window or not window.frame then return end
-
-    local mouseOver = window.frame:IsShown() and window.frame:IsMouseOver()
-        or (window.memberPanel and window.memberPanel:IsShown()
-            and window.memberPanel:IsMouseOver())
-    local inputHasFocus = window.input and window.input:HasFocus()
-    local recentMessage = window.lastMessageAt
-        and GetTime() - window.lastMessageAt < MESSAGE_VISIBLE_SECONDS
-    local alpha = (mouseOver or inputHasFocus or recentMessage) and 1 or 0.45
-    TrialChatCommon.FadeTo(window.frame, alpha)
-    if window.memberPanel then
-        TrialChatCommon.FadeTo(window.memberPanel, alpha)
-    end
-end
-
 local function makeMessageId(sender, counter)
     local hash = 5381
     for index = 1, #sender do
@@ -246,64 +220,6 @@ local function makeMessageId(sender, counter)
     end
     return string.format("%08x-%08x-%04x-%04x",
         hash, GetServerTime(), counter % 65536, math.random(0, 65535))
-end
-
-local function renderGroupMessage(session, entry)
-    local shortSender = string.match(entry.sender, "^([^-]+)") or entry.sender
-    local memberKey = findMemberKey(session, entry.sender)
-    local member = memberKey and session.members[memberKey]
-    local nameColor = entry.isEmote and "|cffff7d0a"
-        or getClassColor(member and member.classFile) or "|cffffcc00"
-    local timestampColor = entry.isEmote and "|cffff7d0a" or "|cffaaaaaa"
-    local timestamp = timestampColor
-        .. "[" .. date("%H:%M", entry.timestamp) .. "]|r "
-    local senderText = nameColor .. shortSender .. "|r"
-    local displayMessage = TrialChatCommon.FormatMessageText(
-        TrialChatCommon.AddSongLinkOwner(entry.message, entry.sender))
-    if entry.isEmote then
-        return timestamp .. senderText .. " "
-            .. "|cffff7d0a" .. displayMessage .. "|r"
-    end
-    return timestamp .. senderText .. ": " .. displayMessage
-end
-
--- Up to MAX_CHAT_HISTORY messages are stored, but only the newest
--- visibleCount are drawn; a link on top shows older ones on request.
-local function getHistoryLines(session, visibleCount)
-    local history = session.history or {}
-    local first = math.max(1, #history - (visibleCount or VISIBLE_HISTORY) + 1)
-    local lines = {}
-    if first > 1 then
-        lines[1] = TrialChatCommon.GetOlderMessagesLine(first - 1)
-    end
-    for index = first, #history do
-        local item = history[index]
-        local line = type(item) == "table"
-            and renderGroupMessage(session, item) or item
-        if type(line) == "string" then
-            lines[#lines + 1] = TrialChatCommon.RemovePlayerLinks(line)
-        end
-    end
-    return lines
-end
-
-local function rebuildGroupLog(session, keepPosition)
-    local window = session.window
-    if not window then return end
-
-    TrialChatCommon.SetChatLogLines(window.log,
-        getHistoryLines(session, window.visibleCount), keepPosition)
-end
-
--- Older messages arriving in a burst (history loading) would otherwise
--- redraw the whole log once per message.
-local function scheduleGroupLogRebuild(session)
-    if session.rebuildPending then return end
-    session.rebuildPending = true
-    C_Timer.After(LOG_REBUILD_DELAY, function()
-        session.rebuildPending = nil
-        rebuildGroupLog(session, true)
-    end)
 end
 
 local function ensureHistoryIndex(session)
@@ -379,8 +295,7 @@ local function addGroupMessage(
     end
     timestamp = timestamp or GetServerTime()
 
-    -- No sound for a group you're already looking at: its tab is showing in
-    -- the open TrialChat window, or its own window is open.
+    -- No sound for a group you're already looking at in TrialChat.
     if shouldNotify and not session.muted and not isGroupViewed(session) then
         PlaySound(SOUNDKIT.TELL_MESSAGE)
     end
@@ -399,20 +314,6 @@ local function addGroupMessage(
 
     if activeGroups[session.id] == session then
         queueGroupSave(session)
-    end
-    if session.window and insertAt then
-        if insertAt == #session.history then
-            local line = renderGroupMessage(session, entry)
-            TrialChatCommon.AddChatLogMessage(session.window.log,
-                TrialChatCommon.RemovePlayerLinks(line), isSelf(sender))
-        else
-            scheduleGroupLogRebuild(session)
-        end
-        session.window.lastMessageAt = GetTime()
-        updateWindowAlpha(session.window)
-        C_Timer.After(MESSAGE_VISIBLE_SECONDS, function()
-            updateWindowAlpha(session.window)
-        end)
     end
     if insertAt and activeGroups[session.id] == session then
         notifyChange("message", session.id, entry, insertAt == #session.history)
@@ -535,19 +436,13 @@ end
 -- online member is asked instead.
 local requestHistoryPage
 
-local function updateHistoryButton(session)
-    local button = session.window and session.window.historyButton
-    if button then
-        local load = session.historyLoad
-        button:SetText(load and ("Syncing... " .. load.added) or "Sync history")
-        button:SetEnabled(not load)
-    end
+local function notifyHistoryProgress(session)
     notifyChange("history", session.id)
 end
 
 local function finishHistoryLoad(session, message)
     session.historyLoad = nil
-    updateHistoryButton(session)
+    notifyHistoryProgress(session)
     showNotice(session.name .. ": " .. message)
 end
 
@@ -603,7 +498,7 @@ local function startHistoryLoad(session)
     if session.historyLoad or activeGroups[session.id] ~= session then return end
     local load = { added = 0, tried = {} }
     session.historyLoad = load
-    updateHistoryButton(session)
+    notifyHistoryProgress(session)
     useNextHistorySource(session)
     if session.historyLoad == load then
         watchHistoryLoad(session, load)
@@ -681,327 +576,6 @@ local function sendGroupMessage(session, message)
     end
 end
 
-local function createGroupWindow(session)
-    if session.window then
-        session.window.frame:Show()
-        session.window.input:SetFocus()
-        updateWindowAlpha(session.window)
-        return
-    end
-
-    local window = {}
-    session.window = window
-    local frame = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    window.frame = frame
-    frame:SetSize(session.width or 580, session.height or 420)
-    frame:SetPoint("CENTER")
-    frame:SetFrameStrata("DIALOG")
-    frame:SetFrameLevel(100)
-    frame:SetMovable(true)
-    frame:SetResizable(true)
-    frame:SetResizeBounds(320, 320, 1200, 900)
-    frame:SetClampedToScreen(true)
-    frame:EnableMouse(true)
-    frame:RegisterForDrag("LeftButton")
-    frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-    end)
-    frame:SetScript("OnSizeChanged", function(_, width, height)
-        session.width = width
-        session.height = height
-        local savedGroup = getSavedGroups()[session.id]
-        if savedGroup then
-            savedGroup.width = width
-            savedGroup.height = height
-        end
-        if window.UpdateMembers then
-            window:UpdateMembers()
-        end
-    end)
-    frame:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    frame:SetBackdropColor(0.04, 0.04, 0.04, 0.95)
-    frame:SetAlpha(0.45)
-    frame:HookScript("OnEnter", function()
-        updateWindowAlpha(window)
-    end)
-    frame:HookScript("OnLeave", function()
-        updateWindowAlpha(window)
-    end)
-    TrialChatCommon.WatchHover(frame, function()
-        updateWindowAlpha(window)
-    end)
-
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -12)
-    title:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -14, -12)
-    title:SetJustifyH("CENTER")
-    title:SetText(session.name)
-
-    window.onlineMemberCount = frame:CreateFontString(
-        nil, "OVERLAY", "GameFontNormalSmall")
-    window.onlineMemberCount:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -32)
-    window.onlineMemberCount:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -14, -32)
-    window.onlineMemberCount:SetJustifyH("CENTER")
-
-    local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    closeButton:SetScript("OnClick", function()
-        frame:Hide()
-    end)
-
-    window.historyButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    window.historyButton:SetSize(90, 20)
-    window.historyButton:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -8)
-    window.historyButton:SetNormalFontObject("GameFontNormalSmall")
-    window.historyButton:SetScript("OnClick", function()
-        startHistoryLoad(session)
-    end)
-    window.historyButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Ask an online member for the messages you're missing,"
-            .. " up to the last " .. MAX_CHAT_HISTORY .. ".", nil, nil, nil, nil, true)
-        GameTooltip:Show()
-    end)
-    window.historyButton:SetScript("OnLeave", GameTooltip_Hide)
-    updateHistoryButton(session)
-
-    window.log = CreateFrame("ScrollingMessageFrame", nil, frame)
-    window.log:SetFontObject(ChatFontNormal)
-    window.log:SetMaxLines(MAX_CHAT_HISTORY + 1)
-    window.log:SetFading(false)
-    window.log:SetJustifyH("LEFT")
-    window.log:SetHyperlinksEnabled(true)
-    window.log:EnableMouse(true)
-    window.log:SetScript("OnHyperlinkClick", function(_, link, text, button)
-        if link == "tcolder" then
-            window.visibleCount = (window.visibleCount or VISIBLE_HISTORY)
-                + VISIBLE_HISTORY
-            rebuildGroupLog(session, true)
-            return
-        end
-        TrialChatCommon.HandleHyperlinkClick(link, text, button)
-    end)
-    window.log:SetScript("OnHyperlinkEnter", function(self, link, text)
-        GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT")
-        if link == "tcolder" then
-            GameTooltip:SetText("Show " .. VISIBLE_HISTORY .. " older messages")
-        elseif string.sub(link or "", 1, 6) == "tcurl:" then
-            GameTooltip:SetText("Click to copy URL")
-        elseif string.sub(link or "", 1, 7) == "player:"
-            or string.sub(link or "", 1, 9) == "tcplayer:" then
-            GameTooltip:SetText("Click for player options: " .. (text or "player"))
-        else
-            GameTooltip:SetHyperlink(link)
-        end
-        GameTooltip:Show()
-    end)
-    window.log:SetScript("OnHyperlinkLeave", function()
-        GameTooltip_Hide()
-    end)
-    TrialChatCommon.SetUpChatLog(window.log)
-    TrialChatCommon.SetChatLogLines(window.log, getHistoryLines(session))
-    window.log:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -58)
-    window.log:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 48)
-
-    local memberPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    window.memberPanel = memberPanel
-    memberPanel:SetPoint("TOPLEFT", frame, "TOPRIGHT", 0, 0)
-    memberPanel:SetPoint("BOTTOMLEFT", frame, "BOTTOMRIGHT", 0, 0)
-    memberPanel:SetWidth(170)
-    memberPanel:SetFrameStrata("DIALOG")
-    memberPanel:SetFrameLevel(frame:GetFrameLevel() + 1)
-    memberPanel:EnableMouse(true)
-    memberPanel:HookScript("OnEnter", function()
-        updateWindowAlpha(window)
-    end)
-    memberPanel:HookScript("OnLeave", function()
-        updateWindowAlpha(window)
-    end)
-    memberPanel:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    memberPanel:SetBackdropColor(0.02, 0.02, 0.02, 0.75)
-
-    window.memberTitle = memberPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    window.memberTitle:SetPoint("TOP", memberPanel, "TOP", 0, -8)
-
-    window.memberToggleButton = CreateFrame(
-        "Button", nil, frame, "UIPanelButtonTemplate")
-    window.memberToggleButton:SetSize(22, 18)
-    window.memberToggleButton:SetPoint("TOP", title, "BOTTOM", 70, -2)
-    window.membersExpanded = false
-    window.memberToggleButton:SetScript("OnClick", function()
-        window.membersExpanded = not window.membersExpanded
-        if frame:IsShown() and window.membersExpanded then
-            memberPanel:Show()
-        else
-            memberPanel:Hide()
-        end
-        window:UpdateMembers()
-        updateWindowAlpha(window)
-        if GameTooltip:GetOwner() == window.memberToggleButton then
-            GameTooltip:SetText(window.membersExpanded
-                and "Hide members" or "Show members")
-        end
-    end)
-    window.memberToggleButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText(window.membersExpanded
-            and "Hide members" or "Show members")
-        GameTooltip:Show()
-    end)
-    window.memberToggleButton:SetScript("OnLeave", GameTooltip_Hide)
-
-    local memberScroll = CreateFrame(
-        "ScrollFrame", nil, memberPanel, "FauxScrollFrameTemplate")
-    window.memberScroll = memberScroll
-    memberScroll:SetPoint("TOPLEFT", memberPanel, "TOPLEFT", 6, -28)
-    memberScroll:SetPoint("BOTTOMRIGHT", memberPanel, "BOTTOMRIGHT", -24, 6)
-    memberScroll:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, 18, function()
-            window:UpdateMembers()
-        end)
-    end)
-
-    local input = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
-    window.input = input
-    input:SetAutoFocus(false)
-    input:SetMaxLetters(MAX_GROUP_MESSAGE_BYTES)
-    TrialChatCommon.RegisterLinkInput(input)
-    input:SetHeight(26)
-    input:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 14, 14)
-    input:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -14, 14)
-    input:HookScript("OnEditFocusGained", function()
-        updateWindowAlpha(window)
-    end)
-    input:HookScript("OnEditFocusLost", function()
-        updateWindowAlpha(window)
-    end)
-    input:SetScript("OnEnterPressed", function(self)
-        local message = self:GetText()
-        self:SetText("")
-        sendGroupMessage(session, message)
-        self:SetFocus()
-    end)
-    input:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-    end)
-
-    local resizeButton = CreateFrame("Button", nil, frame)
-    resizeButton:SetSize(16, 16)
-    resizeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -6, 6)
-    resizeButton:SetNormalTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Up")
-    resizeButton:SetHighlightTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Highlight")
-    resizeButton:SetPushedTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Down")
-    resizeButton:SetScript("OnMouseDown", function()
-        frame:StartSizing("BOTTOMRIGHT")
-    end)
-    resizeButton:SetScript("OnMouseUp", function()
-        frame:StopMovingOrSizing()
-        if saveGroup then saveGroup(session) end
-    end)
-
-    window.rows = {}
-    function window:UpdateMembers()
-        local names = {}
-        for key, member in pairs(session.members) do
-            names[#names + 1] = {
-                key = key,
-                name = member.name,
-                classFile = member.classFile,
-            }
-        end
-        table.sort(names, function(left, right)
-            return strlower(left.name) < strlower(right.name)
-        end)
-
-        self.memberTitle:SetText("Members (" .. #names .. ")")
-        self.onlineMemberCount:SetText("Online members (" .. #names .. ")")
-        self.memberToggleButton:SetText(self.membersExpanded and "<" or ">")
-        local visibleRows = math.max(1,
-            math.floor(self.memberScroll:GetHeight() / 18))
-        FauxScrollFrame_Update(self.memberScroll, #names, visibleRows, 18)
-        local offset = FauxScrollFrame_GetOffset(self.memberScroll)
-
-        while #self.rows < #names do
-            local row = CreateFrame("Button", nil, memberPanel)
-            row:SetHeight(18)
-            row:SetPoint("TOPLEFT", memberScroll, "TOPLEFT",
-                2, -(#self.rows) * 18)
-            row:SetPoint("RIGHT", memberScroll, "RIGHT", -4, 0)
-            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.text:SetAllPoints()
-            row.text:SetJustifyH("LEFT")
-            row.text:SetWordWrap(false)
-            row:RegisterForClicks("RightButtonUp")
-            row:SetScript("OnClick", function(self, button)
-                if button == "RightButton" then
-                    TrialChatCommon.ShowPlayerOptions(
-                        self.memberName, self.memberName, button)
-                end
-            end)
-            row:SetScript("OnEnter", function(self)
-                GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-                GameTooltip:SetText("Right-click for player options.")
-                GameTooltip:Show()
-            end)
-            row:SetScript("OnLeave", GameTooltip_Hide)
-            row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-            self.rows[#self.rows + 1] = row
-        end
-
-        for index, row in ipairs(self.rows) do
-            local member = names[offset + index]
-            if member and index <= visibleRows then
-                local nameColor = getClassColor(member.classFile)
-                local nameText = nameColor and (nameColor .. member.name .. "|r")
-                    or member.name
-                row.text:SetText(nameText)
-                row.memberName = member.name
-                row:Show()
-            else
-                row:Hide()
-            end
-        end
-    end
-
-    frame:HookScript("OnShow", function()
-        if window.membersExpanded then
-            memberPanel:Show()
-        end
-        window:UpdateMembers()
-        markGroupRead(session)
-        notifyChange("unread", session.id)
-        -- Reopened windows start at the newest messages again.
-        if window.visibleCount then
-            window.visibleCount = nil
-            rebuildGroupLog(session)
-        else
-            window.log:ScrollToBottom()
-        end
-    end)
-    frame:HookScript("OnHide", function()
-        memberPanel:Hide()
-    end)
-
-    memberPanel:Hide()
-    frame:Hide()
-    window:UpdateMembers()
-end
-
 persistGroup = function(session)
     if not session then return end
     pendingGroupSaves[session.id] = nil
@@ -1027,8 +601,6 @@ persistGroup = function(session)
         memberName = session.reconnectName or session.targetName,
         isCreator = session.isCreator == true,
         creatorName = session.creatorName,
-        width = session.width,
-        height = session.height,
         history = session.history or {},
         knownMembers = knownMembers,
         unreadTracking = true,
@@ -1082,15 +654,9 @@ local function isJoinCandidate(session, name)
     return false
 end
 
--- Shows a group you just connected to or asked for: in the TrialChat window
--- when it's there to handle it, otherwise in the group's own window.
+-- Shows a group you just connected to or asked for in TrialChat.
 local function showSession(session)
-    if changeHandler then
-        notifyChange("open", session.id)
-        return
-    end
-    session.window.frame:Show()
-    session.window.input:SetFocus()
+    notifyChange("open", session.id)
 end
 
 local function activateGroup(session)
@@ -1099,7 +665,6 @@ local function activateGroup(session)
     session.members = session.members or {}
     addMember(session, selfName or UnitName("player"))
     persistGroup(session)
-    createGroupWindow(session)
     notifyChange("groups", session.id)
     if not session.autoJoin then
         showSession(session)
@@ -1161,8 +726,6 @@ local function joinGroup(name, password, targetName, savedGroup, autoJoin)
         isCreator = savedGroup and savedGroup.isCreator
             and savedGroup.creatorName and namesMatch(savedGroup.creatorName, selfName),
         creatorName = savedGroup and savedGroup.creatorName,
-        width = savedGroup and savedGroup.width,
-        height = savedGroup and savedGroup.height,
         history = savedGroup and type(savedGroup.history) == "table"
             and savedGroup.history or {},
         muted = savedGroup and savedGroup.muted == true,
@@ -1218,8 +781,6 @@ startJoinAttempt = function(session, candidateIndex)
                 memberName = session.reconnectName,
                 history = session.history,
                 knownMembers = session.knownMembers,
-                width = session.width,
-                height = session.height,
                 muted = session.muted,
                 unreadTracking = true,
             }, session.autoJoin)
@@ -1256,8 +817,6 @@ createGroup = function(name, password, savedGroup, autoJoin)
             and savedGroupIsCreator(savedGroup) or not savedGroup,
         creatorName = savedGroup and savedGroup.creatorName
             or (not savedGroup and (selfName or UnitName("player"))),
-        width = savedGroup and savedGroup.width,
-        height = savedGroup and savedGroup.height,
         history = savedGroup and type(savedGroup.history) == "table"
             and savedGroup.history or {},
         muted = savedGroup and savedGroup.muted == true,
@@ -1284,131 +843,32 @@ local function getGroupDetailsProblem(name, password)
     end
 end
 
-local function validateGroupDetails(name, password)
-    name = strtrim(name or "")
-    password = password or ""
+-- What was entered in the create/join dialog: creates or joins the group,
+-- or returns why it can't, for the dialog to show.
+local function submitGroupDialog(mode, values, preset)
+    local name = strtrim(values.name or "")
+    local password = values.password or ""
     local problem = getGroupDetailsProblem(name, password)
-    if problem then
-        showNotice(problem)
+    if problem then return problem end
+
+    if mode == "create" then
+        createGroup(name, password, preset)
         return nil
     end
-    return name, password
+    local memberName = strtrim(values.memberName or "")
+    local id = getGroupId(name)
+    if not activeGroups[id] and not pendingJoins[id]
+        and (memberName == "" or #memberName > 64 or string.find(memberName, "[%c|]")) then
+        return "Enter the character name of an online group member."
+    end
+    joinGroup(name, password, memberName, preset)
 end
 
-local dialog
+-- mode is "create" or "join"; preset fills in a saved group's details.
 openGroupDialog = function(mode, preset)
-    if not dialog then
-        dialog = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-        dialog:SetSize(340, 250)
-        dialog:SetPoint("CENTER")
-        dialog:SetFrameStrata("DIALOG")
-        dialog:SetFrameLevel(120)
-        dialog:EnableMouse(true)
-        dialog:SetBackdrop({
-            bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-            edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-            tile = true,
-            tileSize = 16,
-            edgeSize = 16,
-            insets = { left = 4, right = 4, top = 4, bottom = 4 },
-        })
-        dialog:SetBackdropColor(0.04, 0.04, 0.04, 0.98)
-
-        dialog.title = dialog:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        dialog.title:SetPoint("TOP", dialog, "TOP", 0, -14)
-
-        local closeButton = CreateFrame("Button", nil, dialog, "UIPanelCloseButton")
-        closeButton:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -2, -2)
-        closeButton:SetScript("OnClick", function()
-            dialog:Hide()
-        end)
-
-        local nameLabel = dialog:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        nameLabel:SetPoint("TOPLEFT", dialog, "TOPLEFT", 18, -48)
-        nameLabel:SetText("Group name")
-        dialog.nameInput = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
-        dialog.nameInput:SetSize(274, 24)
-        dialog.nameInput:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", 4, -4)
-        dialog.nameInput:SetAutoFocus(false)
-        dialog.nameInput:SetMaxLetters(MAX_GROUP_NAME_BYTES)
-
-        local passwordLabel = dialog:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        passwordLabel:SetPoint("TOPLEFT", dialog.nameInput, "BOTTOMLEFT", -4, -10)
-        passwordLabel:SetText("Password")
-        dialog.passwordInput = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
-        dialog.passwordInput:SetSize(274, 24)
-        dialog.passwordInput:SetPoint("TOPLEFT", passwordLabel, "BOTTOMLEFT", 4, -4)
-        dialog.passwordInput:SetAutoFocus(false)
-        dialog.passwordInput:SetMaxLetters(MAX_PASSWORD_BYTES)
-        dialog.passwordInput:SetPassword(true)
-        dialog.passwordInput:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText("Shared room key, stored on this character.")
-            GameTooltip:AddLine(
-                "It is sent in addon whispers when someone joins. Do not reuse a real password.",
-                1, 1, 1, true)
-            GameTooltip:Show()
-        end)
-        dialog.passwordInput:SetScript("OnLeave", GameTooltip_Hide)
-
-        dialog.memberLabel = dialog:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        dialog.memberLabel:SetPoint("TOPLEFT", dialog.passwordInput, "BOTTOMLEFT", -4, -10)
-        dialog.memberLabel:SetText("Connect through online member")
-        dialog.memberInput = CreateFrame("EditBox", nil, dialog, "InputBoxTemplate")
-        dialog.memberInput:SetSize(294, 24)
-        dialog.memberInput:SetPoint("TOPLEFT", dialog.memberLabel, "BOTTOMLEFT", 4, -4)
-        dialog.memberInput:SetAutoFocus(false)
-        dialog.memberInput:SetMaxLetters(64)
-
-        dialog.submitButton = CreateFrame("Button", nil, dialog, "UIPanelButtonTemplate")
-        dialog.submitButton:SetSize(100, 24)
-        dialog.submitButton:SetPoint("BOTTOMRIGHT", dialog, "BOTTOMRIGHT", -18, 14)
-        dialog.submitButton:SetScript("OnClick", function()
-            local name, password = validateGroupDetails(
-                dialog.nameInput:GetText(), dialog.passwordInput:GetText())
-            if not name then return end
-
-            if dialog.mode == "create" then
-                dialog:Hide()
-                createGroup(name, password, dialog.preset)
-            else
-                local memberName = dialog.memberInput:GetText()
-                local id = getGroupId(name)
-                if not activeGroups[id] and not pendingJoins[id] then
-                    memberName = validateMemberName(memberName)
-                    if not memberName then return end
-                end
-                dialog:Hide()
-                joinGroup(name, password, memberName, dialog.preset)
-            end
-        end)
-
-        dialog.passwordInput:SetScript("OnEnterPressed", function()
-            if dialog.mode == "join" then
-                dialog.memberInput:SetFocus()
-            else
-                dialog.submitButton:Click()
-            end
-        end)
-        dialog.nameInput:SetScript("OnEnterPressed", function()
-            dialog.passwordInput:SetFocus()
-        end)
-        dialog.memberInput:SetScript("OnEnterPressed", function()
-            dialog.submitButton:Click()
-        end)
-    end
-
-    dialog.mode = mode
-    dialog.preset = preset
-    dialog.title:SetText(mode == "create" and "Create Group" or "Join Group")
-    dialog.submitButton:SetText(mode == "create" and "Create" or "Join")
-    dialog.memberLabel:SetShown(mode == "join")
-    dialog.memberInput:SetShown(mode == "join")
-    dialog.nameInput:SetText(preset and preset.name or "")
-    dialog.passwordInput:SetText(preset and preset.password or "")
-    dialog.memberInput:SetText(preset and preset.memberName or "")
-    dialog:Show()
-    dialog.nameInput:SetFocus()
+    TrialChatGroupDialog.Show(mode, preset, function(values)
+        return submitGroupDialog(mode, values, preset)
+    end)
 end
 
 local function disconnectSession(id)
@@ -1420,11 +880,6 @@ local function disconnectSession(id)
     pendingGroupSaves[id] = nil
     activeGroups[id] = nil
     session.members = {}
-    if session.window then
-        session.window.frame:Hide()
-        session.window.input:ClearFocus()
-        session.window:UpdateMembers()
-    end
     notifyChange("groups", id)
     return session
 end
@@ -1465,11 +920,6 @@ local function deleteGroup(id)
         pendingGroupSaves[id] = nil
         activeGroups[id] = nil
         session.members = {}
-        if session.window then
-            session.window.frame:Hide()
-            session.window.input:ClearFocus()
-            session.window:UpdateMembers()
-        end
     end
     pendingGroupSaves[id] = nil
     getSavedGroups()[id] = nil
@@ -1609,90 +1059,6 @@ local function receiveInviteReply(id, sender, answer)
     end
 end
 
-local menu
-local menuRows = {}
-local function createMenuRow(index)
-    local row = CreateFrame("Button", nil, menu)
-    row:SetHeight(24)
-    row:SetPoint("TOPLEFT", menu, "TOPLEFT", 8, -30 - (index - 1) * 24)
-    row:SetPoint("TOPRIGHT", menu, "TOPRIGHT", -8, -30 - (index - 1) * 24)
-    row:SetHighlightTexture("Interface/QuestFrame/UI-QuestTitleHighlight")
-    row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
-    row.text:SetPoint("RIGHT", row, "RIGHT", -56, 0)
-    row.text:SetJustifyH("LEFT")
-    row:SetScript("OnClick", function(self)
-        menu:Hide()
-        self.action()
-    end)
-    row.connectButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.connectButton:SetSize(76, 18)
-    row.connectButton:SetPoint("RIGHT", row, "RIGHT", -2, 0)
-    row.connectButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    row.connectButton:SetScript("OnClick", function(self, button)
-        local parent = self:GetParent()
-        local active = activeGroups[parent.groupId]
-        if button == "RightButton" then
-            if active then
-                menu:Hide()
-                StaticPopup_Show("TRIALCHAT_CONFIRM_DISCONNECT",
-                    parent.groupName, nil, parent.groupId)
-            end
-            return
-        end
-
-        local savedGroup = getSavedGroups()[parent.groupId]
-        local wasMuted
-        if active then
-            wasMuted = active.muted
-        else
-            wasMuted = savedGroup and savedGroup.muted
-        end
-        local muted = not wasMuted
-        if active then
-            active.muted = muted
-            persistGroup(active)
-        elseif savedGroup then
-            savedGroup.muted = muted
-        end
-        if parent.savedGroup then
-            parent.savedGroup.muted = muted
-        end
-        self:SetText(muted and "Unmute" or "Mute")
-    end)
-    row.connectButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Left-click to mute or unmute the message sound.\nRight-click to disconnect.")
-        GameTooltip:Show()
-    end)
-    row.connectButton:SetScript("OnLeave", GameTooltip_Hide)
-    row.connectButton:Hide()
-
-    row.exitButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.exitButton:SetSize(48, 18)
-    row.exitButton:SetPoint("RIGHT", row.connectButton, "LEFT", -2, 0)
-    row.exitButton:SetText("Exit")
-    row.exitButton:SetScript("OnClick", function(self)
-        local parent = self:GetParent()
-        menu:Hide()
-        StaticPopup_Show("TRIALCHAT_CONFIRM_EXIT", parent.groupName,
-            nil, parent.groupId)
-    end)
-    row.exitButton:Hide()
-
-    row.deleteButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    row.deleteButton:SetSize(52, 18)
-    row.deleteButton:SetPoint("RIGHT", row.connectButton, "LEFT", -2, 0)
-    row.deleteButton:SetText("Delete")
-    row.deleteButton:SetScript("OnClick", function(self)
-        menu:Hide()
-        StaticPopup_Show("TRIALCHAT_CONFIRM_DELETE", self:GetParent().groupName,
-            nil, self:GetParent().groupId)
-    end)
-    row.deleteButton:Hide()
-    menuRows[index] = row
-end
-
 local function defineConfirmDialogs()
     if StaticPopupDialogs.TRIALCHAT_CONFIRM_DISCONNECT then return end
 
@@ -1734,142 +1100,10 @@ local function defineConfirmDialogs()
     }
 end
 
-local function createMenu()
-    defineConfirmDialogs()
-
-    menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    menu:SetWidth(230)
-    menu:SetFrameStrata("DIALOG")
-    menu:SetFrameLevel(120)
-    menu:EnableMouse(true)
-    menu:SetClampedToScreen(true)
-    menu:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    menu:SetBackdropColor(0.02, 0.02, 0.02, 0.98)
-
-    menu.title = menu:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    menu.title:SetPoint("TOP", menu, "TOP", 0, -10)
-    menu.title:SetText("Groups")
-
-    menu.createButton = CreateFrame("Button", nil, menu, "UIPanelButtonTemplate")
-    menu.createButton:SetSize(96, 24)
-    menu.createButton:SetScript("OnClick", function()
-        menu:Hide()
-        openGroupDialog("create")
-    end)
-    menu.createButton:SetText("Add Group")
-
-    menu.joinButton = CreateFrame("Button", nil, menu, "UIPanelButtonTemplate")
-    menu.joinButton:SetSize(96, 24)
-    menu.joinButton:SetScript("OnClick", function()
-        menu:Hide()
-        openGroupDialog("join")
-    end)
-    menu.joinButton:SetText("Join Group")
-end
-
-function Groups:ToggleMenu(anchor)
-    if not menu then
-        createMenu()
-    end
-    if menu:IsShown() then
-        menu:Hide()
-        return
-    end
-
-    local savedGroups = getSavedGroups()
-    local groups = {}
-    for id, group in pairs(savedGroups) do
-        if type(group) == "table" and type(group.name) == "string"
-            and type(group.password) == "string" then
-            groups[#groups + 1] = {
-                id = id,
-                name = group.name,
-                password = group.password,
-                memberName = group.memberName,
-                muted = group.muted == true,
-                isCreator = savedGroupIsCreator(group),
-                creatorName = group.creatorName,
-                width = group.width,
-                height = group.height,
-                history = group.history,
-                knownMembers = type(group.knownMembers) == "table"
-                    and group.knownMembers or {},
-            }
-        end
-    end
-    table.sort(groups, function(left, right)
-        return strlower(left.name) < strlower(right.name)
-    end)
-
-    while #menuRows < #groups do
-        createMenuRow(#menuRows + 1)
-    end
-    for index, row in ipairs(menuRows) do
-        local group = groups[index]
-        if group then
-            local savedGroup = group
-            local groupRow = row
-            row.groupId = group.id
-            row.groupName = group.name
-            row.savedGroup = savedGroup
-            row.connect = function(groupToConnect)
-                local active = activeGroups[groupToConnect.id]
-                if active then
-                    showSession(active)
-                elseif #getJoinCandidates(groupToConnect) > 0 then
-                    joinGroup(groupToConnect.name, groupToConnect.password,
-                        groupToConnect.memberName, groupToConnect)
-                elseif groupToConnect.isCreator then
-                    createGroup(groupToConnect.name, groupToConnect.password,
-                        groupToConnect)
-                else
-                    createGroup(groupToConnect.name, groupToConnect.password,
-                        groupToConnect)
-                end
-            end
-            row.text:SetText(group.name)
-            row.action = function()
-                groupRow.connect(savedGroup)
-            end
-            local active = activeGroups[group.id]
-            local isMuted = active and active.muted
-            if not active then
-                isMuted = group.muted
-            end
-            row.connectButton:SetText(isMuted and "Unmute" or "Mute")
-            row.connectButton:SetShown(true)
-            row.exitButton:SetShown(not savedGroup.isCreator)
-            row.deleteButton:SetShown(savedGroup.isCreator)
-            row.text:ClearAllPoints()
-            row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
-            row.text:SetPoint("RIGHT", row, "RIGHT",
-                savedGroup.isCreator and -138 or -134, 0)
-            row:Show()
-        else
-            row:Hide()
-        end
-    end
-
-    local footerY = -30 - #groups * 24
-    menu.createButton:ClearAllPoints()
-    menu.createButton:SetPoint("TOPLEFT", menu, "TOPLEFT", 10, footerY)
-    menu.joinButton:ClearAllPoints()
-    menu.joinButton:SetPoint("TOPRIGHT", menu, "TOPRIGHT", -10, footerY)
-    menu:SetHeight(30 + #groups * 24 + 42)
-    menu:ClearAllPoints()
-    menu:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 4, -4)
-    menu:Show()
-end
-
 Groups.MAX_MESSAGE_BYTES = MAX_GROUP_MESSAGE_BYTES
 Groups.MAX_HISTORY = MAX_CHAT_HISTORY
+Groups.MAX_NAME_BYTES = MAX_GROUP_NAME_BYTES
+Groups.MAX_PASSWORD_BYTES = MAX_PASSWORD_BYTES
 
 -- The handler is called as handler(kind, groupId, ...) where kind is "groups"
 -- (a group connected, went away, or started or stopped connecting), "open"
@@ -2062,13 +1296,6 @@ function Groups:LoadHistory(id)
     local session = activeGroups[id]
     if session then
         startHistoryLoad(session)
-    end
-end
-
-function Groups:OpenWindow(id)
-    local session = activeGroups[id]
-    if session then
-        createGroupWindow(session)
     end
 end
 
@@ -2312,9 +1539,6 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             if member then
                 member.classFile = body
                 TrialChatCommon.RememberClass(member.name, body, true)
-                if session.window then
-                    session.window:UpdateMembers()
-                end
                 notifyChange("members", id)
             end
         end
@@ -2348,10 +1572,6 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
         if creatorName and namesMatch(sender, creatorName) then
             if session then
                 session.members = {}
-                if session.window then
-                    session.window.frame:Hide()
-                    session.window.input:ClearFocus()
-                end
             end
             activeGroups[id] = nil
             pendingJoins[id] = nil
@@ -2410,7 +1630,7 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
                     -- Messages you asked for aren't unread.
                     entry.read = true
                     load.added = load.added + 1
-                    updateHistoryButton(session)
+                    notifyHistoryProgress(session)
                 end
             end
         elseif pending and isJoinCandidate(pending, sender) then
@@ -2467,9 +1687,6 @@ C_Timer.NewTicker(MEMBER_UPDATE_INTERVAL, function()
             if member then
                 removeMember(session, member.name)
             end
-        end
-        if session.window then
-            session.window:UpdateMembers()
         end
     end
 end)

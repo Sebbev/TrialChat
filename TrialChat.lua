@@ -279,7 +279,6 @@ local function showMinimapTooltip(button)
         GameTooltip:AddLine(unread .. " unread group message"
             .. (unread == 1 and "" or "s") .. ".", 1, 0.49, 0.04)
     end
-    GameTooltip:AddLine("Right-click for group chats.", 0.7, 0.7, 0.7)
     GameTooltip:AddLine("Drag to move this button.", 0.7, 0.7, 0.7)
     GameTooltip:Show()
 end
@@ -337,12 +336,7 @@ local function createMinimapButton()
     border:SetPoint("TOPLEFT", minimapButton, "TOPLEFT", 0, 0)
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 
-    minimapButton:SetScript("OnClick", function(_, button)
-        if button == "RightButton" then
-            TrialChatGroups:ToggleMenu(minimapButton)
-            return
-        end
-
+    minimapButton:SetScript("OnClick", function()
         TrialChatMessenger:Toggle()
         if GameTooltip:GetOwner() == minimapButton then
             showMinimapTooltip(minimapButton)

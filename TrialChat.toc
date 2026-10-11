@@ -13,6 +13,7 @@ TrialChatBubbles.lua
 TrialChat.lua
 TrialChatGroups.lua
 TrialChatUI.lua
+TrialChatGroupDialog.lua
 TrialChatMessages.lua
 TrialChatMinimal.lua
 TrialChatWindow.lua
