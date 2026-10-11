@@ -21,6 +21,7 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 * **Permanent Listeners:** Add permanently active listeners to stay in touch even when you travel to different zones.
 * **Group Chat:** Full group chat functionality, including **chat history synchronization** between all group members.
 * **Chat Tabs:** The TrialChat window has a tab for nearby chat and one for each connected group, showing how many unread messages each has (including ones you missed while offline). Right-click a group tab to open it in its own window.
+* **Long Messages:** Nearby and group messages can be up to 1000 bytes; longer ones are sent in parts and joined back together (players on older versions won't see them).
 * **Sound Notifications:** Never miss a message with integrated group chat audio alerts.
 * **Rich Media Support:** Interactive clickable links for **webpages, items, quests**, and even **Musician** add-on songs.
 * **Emotes:** Support for almost all standard WoW emotes.
