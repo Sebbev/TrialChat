@@ -28,7 +28,6 @@ local UPDATE_SECONDS = 0.1
 local TOAST_WIDTH = 300
 local TOAST_SECONDS = 8
 local DEFAULT_X, DEFAULT_Y = 40, 300
-local SEPARATOR = " \194\183 " -- a middle dot
 
 local View = {}
 View.__index = View
@@ -156,10 +155,10 @@ function View:CreateComposer()
     self.placeholder:SetText("Say something...")
     self.hint = UI.CreateText(composer, UI.Font.small, Color.muted)
     self.hint:SetPoint("RIGHT", composer, "RIGHT", -16, 0)
-    self.hint:SetText("Tab switches" .. SEPARATOR .. "Esc hides")
+    self.hint:SetText("Tab switches")
 
     TrialChatCommon.RegisterLinkInput(input)
-    -- Like the game's chat: Enter sends and stops typing, Esc hides.
+    -- Like the game's chat: Enter sends and stops typing, and so does Esc.
     input:SetScript("OnEnterPressed", function(box)
         local text = box:GetText()
         box:SetText("")
@@ -168,7 +167,6 @@ function View:CreateComposer()
     end)
     input:SetScript("OnEscapePressed", function(box)
         box:ClearFocus()
-        self:Hide()
     end)
     input:SetScript("OnTabPressed", function()
         self.controller.Cycle(IsShiftKeyDown() and -1 or 1)
