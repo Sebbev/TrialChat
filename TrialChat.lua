@@ -937,6 +937,8 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
         return
     end
 
+    TrialChatBubbles.ShowMessage(sender, chatText)
+
     if channel == "RAID" then
         printIncomingMessage("Raid", shortSender, chatText, "|cffff7d0a",
             getKnownNameColor(sender, "|cffff7d0a"), sender)
