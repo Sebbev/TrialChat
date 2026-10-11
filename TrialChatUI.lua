@@ -1,0 +1,584 @@
+-- The look of the TrialChat window: colors, fonts, and the rounded boxes,
+-- icons, buttons and fields it's built from. Shapes and icons are the
+-- addon's own white textures in Media, tinted in game.
+TrialChatUI = {}
+local UI = TrialChatUI
+
+local MEDIA = "Interface\\AddOns\\TrialChat\\Media\\"
+local WHITE = "Interface\\Buttons\\WHITE8X8"
+UI.WHITE = WHITE
+
+local function hexColor(hex)
+    return {
+        tonumber(string.sub(hex, 1, 2), 16) / 255,
+        tonumber(string.sub(hex, 3, 4), 16) / 255,
+        tonumber(string.sub(hex, 5, 6), 16) / 255,
+        hex = hex,
+    }
+end
+
+UI.Color = {
+    window = hexColor("121418"),
+    sidebar = hexColor("0d0f12"),
+    panel = hexColor("0f1114"),
+    line = hexColor("23272e"),
+    outline = hexColor("2a2f36"),
+    field = hexColor("171a1f"),
+    fieldBorder = hexColor("2c3138"),
+    fieldFocus = hexColor("4a505a"),
+    hover = hexColor("1b1f25"),
+    pressed = hexColor("23282f"),
+    pressedBorder = hexColor("3a3f47"),
+    selected = hexColor("1e232a"),
+    divider = hexColor("262b32"),
+    dashed = hexColor("343a42"),
+    text = hexColor("e6e2d6"),
+    textSoft = hexColor("d6d0bd"),
+    muted = hexColor("8b929b"),
+    white = hexColor("ffffff"),
+    accent = hexColor("e8b33f"),
+    accentHover = hexColor("f0c25a"),
+    accentText = hexColor("1a1405"),
+    online = hexColor("5ccf7a"),
+    offline = hexColor("5d636b"),
+    emote = hexColor("ff7d0a"),
+    error = hexColor("ff5c5c"),
+    avatar = hexColor("13171c"),
+    tile = hexColor("1f2329"),
+    tileOffline = hexColor("1a1d22"),
+}
+local Color = UI.Color
+
+-- Group tiles get one of these (background, letters) by their name.
+UI.TileColors = {
+    { hexColor("2a2134"), hexColor("c9a3ff") },
+    { hexColor("1f2a24"), hexColor("8fd6a6") },
+    { hexColor("1d2634"), hexColor("8fb8ff") },
+    { hexColor("33221d"), hexColor("ffb08f") },
+    { hexColor("1b2c2c"), hexColor("7ad9cb") },
+    { hexColor("2e2716"), hexColor("e8c46a") },
+    { hexColor("321d27"), hexColor("ff9ac4") },
+}
+
+local classColors = {}
+
+function UI.ClassColor(classFile)
+    local classColor = classFile and RAID_CLASS_COLORS[classFile]
+    if not classColor then return nil end
+    if not classColors[classFile] then
+        classColors[classFile] = {
+            classColor.r, classColor.g, classColor.b,
+            hex = string.format("%02x%02x%02x",
+                math.floor(classColor.r * 255 + 0.5),
+                math.floor(classColor.g * 255 + 0.5),
+                math.floor(classColor.b * 255 + 0.5)),
+        }
+    end
+    return classColors[classFile]
+end
+
+function UI.ColorText(color, text)
+    return "|cff" .. color.hex .. text .. "|r"
+end
+
+function UI.Tint(region, color, alpha)
+    region:SetVertexColor(color[1], color[2], color[3], alpha or 1)
+end
+
+function UI.SetTextColor(fontString, color, alpha)
+    fontString:SetTextColor(color[1], color[2], color[3], alpha or 1)
+end
+
+-- Text uses the game's fonts for the player's language: the interface font
+-- for the window itself and the chat font for messages.
+local function getFontFile(fontObject, fallback)
+    if fontObject and fontObject.GetFont then
+        local file = fontObject:GetFont()
+        if file then return file end
+    end
+    return fallback
+end
+
+local CHAT_FONT = getFontFile(ChatFontNormal, "Fonts\\ARIALN.TTF")
+local INTERFACE_FONT = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+
+local function createFont(name, file, size)
+    local font = CreateFont(name)
+    font:SetFont(file, size, "")
+    font:SetShadowColor(0, 0, 0, 0.6)
+    font:SetShadowOffset(1, -1)
+    return font
+end
+
+UI.Font = {
+    title = createFont("TrialChatFontTitle", INTERFACE_FONT, 16),
+    heading = createFont("TrialChatFontHeading", INTERFACE_FONT, 15),
+    item = createFont("TrialChatFontItem", INTERFACE_FONT, 12),
+    small = createFont("TrialChatFontSmall", INTERFACE_FONT, 11),
+    label = createFont("TrialChatFontLabel", INTERFACE_FONT, 10),
+    name = createFont("TrialChatFontName", INTERFACE_FONT, 13),
+    initials = createFont("TrialChatFontInitials", INTERFACE_FONT, 13),
+    body = createFont("TrialChatFontBody", CHAT_FONT, 14),
+    time = createFont("TrialChatFontTime", CHAT_FONT, 11),
+}
+
+function UI.CreateText(parent, font, color, layer)
+    local text = parent:CreateFontString(nil, layer or "ARTWORK")
+    text:SetFontObject(font)
+    UI.SetTextColor(text, color or Color.text)
+    return text
+end
+
+-- The first letter of a name, which can take more than one byte.
+function UI.FirstLetter(name)
+    return string.match(name or "", "^[%z\1-\127\194-\244][\128-\191]*") or "?"
+end
+
+---------------------------------------------------------------------------
+-- Rounded boxes: four corner pieces cut from a circle and three strips
+-- that don't overlap, so they blend the same as one texture when faded.
+---------------------------------------------------------------------------
+local CORNER_COORDS = {
+    TOPLEFT = { 0, 0.5, 0, 0.5 },
+    TOPRIGHT = { 0.5, 1, 0, 0.5 },
+    BOTTOMLEFT = { 0, 0.5, 0.5, 1 },
+    BOTTOMRIGHT = { 0.5, 1, 0.5, 1 },
+}
+local ALL_CORNERS = { TOPLEFT = true, TOPRIGHT = true, BOTTOMLEFT = true, BOTTOMRIGHT = true }
+UI.ALL_CORNERS = ALL_CORNERS
+
+local Box = {}
+Box.__index = Box
+
+local function addPart(box, layer, subLevel, texture)
+    local part = box.owner:CreateTexture(nil, layer, nil, subLevel)
+    part:SetTexture(texture or WHITE)
+    box.parts[#box.parts + 1] = part
+    return part
+end
+
+-- options: radius, corners (which are rounded), layer, subLevel, region (to
+-- cover instead of the owner), border (a 1 px outline; all corners rounded).
+function UI.CreateBox(owner, options)
+    options = options or {}
+    local radius = options.radius or 8
+    local layer = options.layer or "BACKGROUND"
+    local subLevel = options.subLevel or 0
+    local region = options.region or owner
+    local box = setmetatable({
+        owner = owner, parts = {}, fill = {}, corners = {}, borderParts = {},
+        color = Color.field, alpha = 1, shown = true,
+    }, Box)
+
+    for point in pairs(CORNER_COORDS) do
+        local corner = addPart(box, layer, subLevel)
+        corner:SetSize(radius, radius)
+        corner:SetPoint(point, region, point)
+        box.corners[point] = corner
+        box.fill[#box.fill + 1] = corner
+    end
+    local top = addPart(box, layer, subLevel)
+    top:SetPoint("TOPLEFT", region, "TOPLEFT", radius, 0)
+    top:SetPoint("BOTTOMRIGHT", region, "TOPRIGHT", -radius, -radius)
+    local bottom = addPart(box, layer, subLevel)
+    bottom:SetPoint("TOPLEFT", region, "BOTTOMLEFT", radius, radius)
+    bottom:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", -radius, 0)
+    local middle = addPart(box, layer, subLevel)
+    middle:SetPoint("TOPLEFT", region, "TOPLEFT", 0, -radius)
+    middle:SetPoint("BOTTOMRIGHT", region, "BOTTOMRIGHT", 0, radius)
+    box.fill[#box.fill + 1] = top
+    box.fill[#box.fill + 1] = bottom
+    box.fill[#box.fill + 1] = middle
+
+    if options.border then
+        for point, coords in pairs(CORNER_COORDS) do
+            local ring = addPart(box, layer, subLevel + 1, MEDIA .. "ring.tga")
+            ring:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+            ring:SetSize(radius, radius)
+            ring:SetPoint(point, region, point)
+            box.borderParts[#box.borderParts + 1] = ring
+        end
+        local edges = {
+            { "TOPLEFT", radius, 0, "TOPRIGHT", -radius, 0, nil, 1 },
+            { "BOTTOMLEFT", radius, 0, "BOTTOMRIGHT", -radius, 0, nil, 1 },
+            { "TOPLEFT", 0, -radius, "BOTTOMLEFT", 0, radius, 1, nil },
+            { "TOPRIGHT", 0, -radius, "BOTTOMRIGHT", 0, radius, 1, nil },
+        }
+        for _, edge in ipairs(edges) do
+            local line = addPart(box, layer, subLevel + 1)
+            line:SetPoint(edge[1], region, edge[1], edge[2], edge[3])
+            line:SetPoint(edge[4], region, edge[4], edge[5], edge[6])
+            if edge[7] then line:SetWidth(edge[7]) end
+            if edge[8] then line:SetHeight(edge[8]) end
+            box.borderParts[#box.borderParts + 1] = line
+        end
+        box:SetBorderColor(Color.fieldBorder)
+    end
+
+    box:SetCorners(options.corners or ALL_CORNERS)
+    return box
+end
+
+function Box:SetCorners(corners)
+    for point, corner in pairs(self.corners) do
+        if corners[point] then
+            local coords = CORNER_COORDS[point]
+            corner:SetTexture(MEDIA .. "disc.tga")
+            corner:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+        else
+            corner:SetTexture(WHITE)
+            corner:SetTexCoord(0, 1, 0, 1)
+        end
+    end
+    self:SetColor(self.color, self.alpha)
+end
+
+function Box:SetColor(color, alpha)
+    self.color, self.alpha = color, alpha or 1
+    for _, part in ipairs(self.fill) do
+        UI.Tint(part, color, self.alpha)
+    end
+end
+
+function Box:SetBorderColor(color, alpha)
+    self.borderColor = color
+    for _, part in ipairs(self.borderParts) do
+        UI.Tint(part, color, alpha)
+    end
+end
+
+function Box:SetShown(shown)
+    self.shown = shown and true or false
+    for _, part in ipairs(self.parts) do
+        part:SetShown(self.shown)
+    end
+end
+
+function Box:Show() self:SetShown(true) end
+function Box:Hide() self:SetShown(false) end
+
+local DASH_LENGTH = 4
+local DASH_GAP = 3
+
+-- A dashed 1 px outline with rounded corners, laid out again on resize.
+local function layoutDashes(owner)
+    local dashes = owner.dashes
+    local width, height = owner:GetSize()
+    local count = 0
+    local function dash(point, x, y, dashWidth, dashHeight)
+        count = count + 1
+        local texture = dashes.parts[count]
+        if not texture then
+            texture = owner:CreateTexture(nil, "BORDER")
+            texture:SetTexture(WHITE)
+            dashes.parts[count] = texture
+        end
+        texture:ClearAllPoints()
+        texture:SetPoint(point, owner, point, x, y)
+        texture:SetSize(dashWidth, dashHeight)
+        UI.Tint(texture, dashes.color)
+        texture:Show()
+    end
+
+    local radius = dashes.radius
+    for x = radius + 2, width - radius - DASH_LENGTH, DASH_LENGTH + DASH_GAP do
+        dash("TOPLEFT", x, 0, DASH_LENGTH, 1)
+        dash("BOTTOMLEFT", x, 0, DASH_LENGTH, 1)
+    end
+    for y = radius + 2, height - radius - DASH_LENGTH, DASH_LENGTH + DASH_GAP do
+        dash("TOPLEFT", 0, -y, 1, DASH_LENGTH)
+        dash("TOPRIGHT", 0, -y, 1, DASH_LENGTH)
+    end
+    for index = count + 1, #dashes.parts do
+        dashes.parts[index]:Hide()
+    end
+end
+
+function UI.AddDashedOutline(owner, radius, color)
+    owner.dashes = { parts = {}, radius = radius, color = color }
+    for point, coords in pairs(CORNER_COORDS) do
+        local ring = owner:CreateTexture(nil, "BORDER")
+        ring:SetTexture(MEDIA .. "ring.tga")
+        ring:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+        ring:SetSize(radius, radius)
+        ring:SetPoint(point, owner, point)
+        UI.Tint(ring, color)
+    end
+    owner:HookScript("OnSizeChanged", layoutDashes)
+    layoutDashes(owner)
+end
+
+---------------------------------------------------------------------------
+-- Icons, dots, avatars, tiles and badges
+---------------------------------------------------------------------------
+function UI.CreateIcon(parent, name, size, color, layer)
+    local icon = parent:CreateTexture(nil, layer or "ARTWORK")
+    icon:SetSize(size, size)
+    UI.SetIcon(icon, name)
+    UI.Tint(icon, color or Color.textSoft)
+    return icon
+end
+
+function UI.SetIcon(icon, name)
+    icon:SetTexture(MEDIA .. "icon-" .. name .. ".tga")
+end
+
+-- A presence dot: filled when online, a ring when not.
+function UI.CreateDot(parent, size)
+    local dot = parent:CreateTexture(nil, "ARTWORK")
+    dot:SetSize(size, size)
+    return dot
+end
+
+function UI.SetDot(dot, online)
+    dot:SetTexture(MEDIA .. (online and "disc.tga" or "ring-bold.tga"))
+    UI.Tint(dot, online and Color.online or Color.offline)
+end
+
+local function setAvatarPerson(avatar, name, color)
+    avatar.letter:SetText(UI.FirstLetter(name))
+    UI.SetTextColor(avatar.letter, color)
+    UI.Tint(avatar.ring, color)
+end
+
+-- A round avatar: the first letter of the name inside a ring, both in the
+-- player's class color.
+function UI.CreateAvatar(parent, size)
+    local avatar = CreateFrame("Button", nil, parent)
+    avatar:SetSize(size, size)
+    avatar.fill = avatar:CreateTexture(nil, "BACKGROUND")
+    avatar.fill:SetAllPoints()
+    avatar.fill:SetTexture(MEDIA .. "disc.tga")
+    UI.Tint(avatar.fill, Color.avatar)
+    avatar.ring = avatar:CreateTexture(nil, "BORDER")
+    avatar.ring:SetAllPoints()
+    avatar.ring:SetTexture(MEDIA .. "ring.tga")
+    avatar.letter = UI.CreateText(avatar, UI.Font.initials)
+    avatar.letter:SetPoint("CENTER", avatar, "CENTER", 1, 0)
+    avatar.SetPerson = setAvatarPerson
+    return avatar
+end
+
+local function setTileLook(tile, background, foreground, text, icon)
+    tile.box:SetColor(background)
+    if icon then
+        UI.SetIcon(tile.icon, icon)
+        UI.Tint(tile.icon, foreground)
+        tile.icon:Show()
+        tile.text:Hide()
+    else
+        tile.text:SetText(text or "")
+        UI.SetTextColor(tile.text, foreground)
+        tile.text:Show()
+        tile.icon:Hide()
+    end
+end
+
+-- The rounded square in front of a conversation: an icon or initials.
+function UI.CreateTile(parent, size)
+    local tile = CreateFrame("Frame", nil, parent)
+    tile:SetSize(size, size)
+    tile.box = UI.CreateBox(tile, { radius = 7 })
+    tile.icon = tile:CreateTexture(nil, "ARTWORK")
+    tile.icon:SetSize(size - 12, size - 12)
+    tile.icon:SetPoint("CENTER")
+    tile.text = UI.CreateText(tile, UI.Font.label)
+    tile.text:SetPoint("CENTER", tile, "CENTER", 1, 0)
+    tile.SetLook = setTileLook
+    return tile
+end
+
+local function setBadgeCount(badge, count)
+    badge.text:SetText(count > 99 and "99+" or tostring(count))
+    badge:SetWidth(math.max(badge:GetHeight(), math.ceil(badge.text:GetStringWidth()) + 12))
+end
+
+-- An accent pill with a count, for unread messages.
+function UI.CreateBadge(parent)
+    local badge = CreateFrame("Frame", nil, parent)
+    badge:SetSize(18, 18)
+    badge.box = UI.CreateBox(badge, { radius = 9 })
+    badge.box:SetColor(Color.accent)
+    badge.text = UI.CreateText(badge, UI.Font.small, Color.accentText)
+    badge.text:SetPoint("CENTER", badge, "CENTER", 0, 0)
+    badge.SetCount = setBadgeCount
+    return badge
+end
+
+function UI.CreateLabel(parent, text)
+    local label = UI.CreateText(parent, UI.Font.label, Color.muted)
+    label:SetText(text and string.upper(text) or "")
+    return label
+end
+
+function UI.CreateLine(parent, color, layer)
+    local line = parent:CreateTexture(nil, layer or "BORDER")
+    line:SetTexture(WHITE)
+    UI.Tint(line, color or Color.line)
+    return line
+end
+
+---------------------------------------------------------------------------
+-- Buttons
+---------------------------------------------------------------------------
+local BUTTON_STYLES = {
+    -- A field-colored button with an outline.
+    outline = { fill = "field", hover = "hover", border = "fieldBorder", content = "textSoft" },
+    -- No background until the cursor is on it.
+    ghost = { hover = "field", content = "muted", hoverContent = "textSoft" },
+    -- Filled with the accent color.
+    accent = { fill = "accent", hover = "accentHover", content = "accentText" },
+    -- A dashed outline, for adding things.
+    dashed = { hover = "hover", content = "textSoft" },
+}
+
+function UI.UpdateButton(button)
+    local style = BUTTON_STYLES[button.style]
+    local enabled = button:IsEnabled()
+    local hovered = button.hovered and enabled
+    local fill = button.active and "pressed"
+        or (hovered and style.hover) or style.fill
+    if fill then
+        button.box:SetColor(Color[fill])
+        button.box:Show()
+    else
+        button.box:Hide()
+    end
+    if style.border then
+        button.box:SetBorderColor(Color[button.active and "pressedBorder" or style.border])
+    end
+
+    local content = Color[(button.active and "white")
+        or (hovered and style.hoverContent) or style.content]
+    if button.icon then UI.Tint(button.icon, content) end
+    if button.label then UI.SetTextColor(button.label, content) end
+    button:SetAlpha(enabled and 1 or 0.5)
+end
+
+function UI.SetButtonActive(button, active)
+    button.active = active and true or false
+    UI.UpdateButton(button)
+end
+
+local function layoutButtonContent(button)
+    local icon, label = button.icon, button.label
+    if icon and label then
+        local iconSize = icon:GetWidth()
+        icon:ClearAllPoints()
+        if button.centered then
+            local width = iconSize + 6 + label:GetStringWidth()
+            icon:SetPoint("LEFT", button, "CENTER", -width / 2, 0)
+        else
+            icon:SetPoint("LEFT", button, "LEFT", 12, 0)
+            button:SetWidth(math.ceil(12 + iconSize + 6 + label:GetStringWidth() + 14))
+        end
+        label:ClearAllPoints()
+        label:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    elseif label then
+        label:SetPoint("CENTER")
+    elseif icon then
+        icon:SetPoint("CENTER")
+    end
+end
+
+local function setButtonText(button, text)
+    button.label:SetText(text)
+    layoutButtonContent(button)
+end
+
+local function showButtonTooltip(button)
+    local tooltip = button.tooltip
+    if type(tooltip) == "function" then tooltip = tooltip(button) end
+    if not tooltip then return end
+    GameTooltip:SetOwner(button, button.tooltipAnchor or "ANCHOR_TOP")
+    GameTooltip:SetText(tooltip, nil, nil, nil, nil, true)
+    GameTooltip:Show()
+end
+
+-- options: style, width, height, radius, icon, iconSize, text, centered
+-- (icon and text in the middle instead of sizing the button to them),
+-- tooltip (text, or a function returning it), onClick.
+function UI.CreateButton(parent, options)
+    local button = CreateFrame("Button", nil, parent)
+    button.style = options.style or "outline"
+    button:SetSize(options.width or 32, options.height or 32)
+    button.box = UI.CreateBox(button, {
+        radius = options.radius or 8,
+        border = BUTTON_STYLES[button.style].border ~= nil,
+    })
+    if button.style == "dashed" then
+        UI.AddDashedOutline(button, options.radius or 8, Color.dashed)
+    end
+    if options.icon then
+        button.icon = UI.CreateIcon(button, options.icon, options.iconSize or 16)
+    end
+    if options.text then
+        button.label = UI.CreateText(button, options.font or UI.Font.item)
+        button.label:SetText(options.text)
+    end
+    button.centered = options.centered
+    button.tooltip = options.tooltip
+    button.SetLabel = setButtonText
+    layoutButtonContent(button)
+
+    button:RegisterForClicks("LeftButtonUp")
+    if options.onClick then
+        button:SetScript("OnClick", options.onClick)
+    end
+    button:SetScript("OnEnter", function(self)
+        self.hovered = true
+        UI.UpdateButton(self)
+        showButtonTooltip(self)
+    end)
+    button:SetScript("OnLeave", function(self)
+        self.hovered = false
+        UI.UpdateButton(self)
+        GameTooltip_Hide()
+    end)
+    button:SetScript("OnEnable", UI.UpdateButton)
+    button:SetScript("OnDisable", UI.UpdateButton)
+    UI.UpdateButton(button)
+    return button
+end
+
+---------------------------------------------------------------------------
+-- Text fields
+---------------------------------------------------------------------------
+local function updateFieldLook(field)
+    field.placeholder:SetShown((field:GetText() or "") == "")
+    field.box:SetBorderColor(field:HasFocus() and Color.fieldFocus or Color.fieldBorder)
+end
+
+-- options: height, placeholder, maxLetters, insetLeft, insetRight, icon.
+function UI.CreateField(parent, options)
+    options = options or {}
+    local field = CreateFrame("EditBox", nil, parent)
+    field:EnableMouse(true)
+    field:SetAutoFocus(false)
+    field:SetHeight(options.height or 32)
+    field:SetFontObject(UI.Font.body)
+    field:SetTextColor(Color.text[1], Color.text[2], Color.text[3], 1)
+    field:SetMaxLetters(options.maxLetters or 255)
+    local insetLeft = options.insetLeft or 12
+    field:SetTextInsets(insetLeft, options.insetRight or 12, 0, 0)
+    field.box = UI.CreateBox(field, { radius = 8, border = true })
+    field.box:SetColor(Color.field)
+
+    if options.icon then
+        field.icon = UI.CreateIcon(field, options.icon, 15, Color.muted)
+        field.icon:SetPoint("LEFT", field, "LEFT", 10, 0)
+    end
+    field.placeholder = UI.CreateText(field, UI.Font.body, Color.muted)
+    field.placeholder:SetPoint("LEFT", field, "LEFT", insetLeft, 0)
+    field.placeholder:SetPoint("RIGHT", field, "RIGHT", -8, 0)
+    field.placeholder:SetJustifyH("LEFT")
+    field.placeholder:SetWordWrap(false)
+    field.placeholder:SetText(options.placeholder or "")
+
+    field:HookScript("OnTextChanged", updateFieldLook)
+    field:HookScript("OnEditFocusGained", updateFieldLook)
+    field:HookScript("OnEditFocusLost", updateFieldLook)
+    field:SetScript("OnEscapePressed", field.ClearFocus)
+    updateFieldLook(field)
+    return field
+end

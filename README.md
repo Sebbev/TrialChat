@@ -10,7 +10,8 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 
 * **Toggle Window:** Type `/tc` in your chat or click the mini-map button to show/hide the interface.
 * **Keybind Support:** A shortcut key option is also available under the game's official keybind menu.
-* **Chat Bubbles:** Type `/tcbubbles` to turn chat bubbles on or off, `/tcbubbles self` for just the bubble over your own character, or `/tcbubbles groups` for just group chat bubbles.
+* **Chat Bubbles:** Type `/tcbubbles` to turn chat bubbles on or off, `/tcbubbles self` for just the bubble over your own character, or `/tcbubbles groups` for just group chat bubbles. The same switches are under the gear button in the window.
+* **Emotes:** Type them like in normal chat (`/wave`, `/e waves hello`), or pick one with the smiley button next to the message box.
 
 ---
 
@@ -19,9 +20,9 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 * **Proximity Chat:** Talk with nearby players across all character types.
 * **Chat Bubbles:** Messages from nearby players appear in speech bubbles above their heads (requires friendly player nameplates; open world only). Your own messages appear over your character too; its position is estimated from the camera, so it can be off with ActionCam or when the camera is pushed in by walls. Group chat messages get a purple bubble with the group's name.
 * **Permanent Listeners:** Add permanently active listeners to stay in touch even when you travel to different zones.
-* **Group Chat:** Full group chat functionality, including **chat history synchronization** between all group members. Click **Load history** in a group to fetch any messages you're missing, up to the last 2000.
-* **Chat History:** Groups keep their last 2000 messages and nearby chat its last 1000; the window shows the newest 200, with a link at the top to show older ones. While you're scrolled up reading, new messages don't pull you down; a **New messages** button takes you back.
-* **Chat Tabs:** The TrialChat window has a tab for nearby chat and one for each connected group, showing how many unread messages each has (including ones you missed while offline). Right-click a group tab to open it in its own window.
+* **Group Chat:** Full group chat functionality, including **chat history synchronization** between all group members. Click the **sync** button in a group to fetch any messages you're missing, up to the last 2000.
+* **Messenger Window:** Nearby chat and your groups are listed on the left with their unread messages (including ones you missed while offline), and saved groups you're not connected to can be connected with a click. Search the list, or right-click a group to open it in its own window, mute it, or leave it. Messages show under the sender's avatar and name in their class color, with dividers for each day and for what's new since you last looked. The list on the right shows who is online, who isn't, and who is nearby.
+* **Chat History:** Groups keep their last 2000 messages and nearby chat its last 1000, all of it scrollable in the window. While you're scrolled up reading, new messages don't pull you down; a **New messages** button takes you back.
 * **Long Messages:** Nearby and group messages can be up to 1000 bytes; longer ones are sent in parts and joined back together (players on older versions won't see them).
 * **Sound Notifications:** Never miss a message with integrated group chat audio alerts.
 * **Rich Media Support:** Interactive clickable links for **webpages, items, quests**, and even **Musician** add-on songs.

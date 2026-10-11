@@ -136,11 +136,12 @@ local function addMember(session, name, classFile)
     addKnownMember(session, name)
     local key = findMemberKey(session, name) or normalizeName(name)
     local existing = session.members[key]
+    classFile = classFile or (existing and existing.classFile)
+        or (isSelf(name) and playerClass) or TrialChatCommon.GetKnownClass(name)
     session.members[key] = {
         name = name,
         lastSeen = GetTime(),
-        classFile = classFile or (existing and existing.classFile)
-            or (isSelf(name) and playerClass),
+        classFile = classFile,
     }
     if session.window then
         session.window:UpdateMembers()
@@ -528,7 +529,7 @@ local function updateHistoryButton(session)
     local button = session.window and session.window.historyButton
     if button then
         local load = session.historyLoad
-        button:SetText(load and ("Loading... " .. load.added) or "Load history")
+        button:SetText(load and ("Syncing... " .. load.added) or "Sync history")
         button:SetEnabled(not load)
     end
     notifyChange("history", session.id)
@@ -1071,6 +1072,17 @@ local function isJoinCandidate(session, name)
     return false
 end
 
+-- Shows a group you just connected to or asked for: in the TrialChat window
+-- when it's there to handle it, otherwise in the group's own window.
+local function showSession(session)
+    if changeHandler then
+        notifyChange("open", session.id)
+        return
+    end
+    session.window.frame:Show()
+    session.window.input:SetFocus()
+end
+
 local function activateGroup(session)
     pendingJoins[session.id] = nil
     activeGroups[session.id] = session
@@ -1078,11 +1090,10 @@ local function activateGroup(session)
     addMember(session, selfName or UnitName("player"))
     persistGroup(session)
     createGroupWindow(session)
-    if not session.autoJoin then
-        session.window.frame:Show()
-        session.window.input:SetFocus()
-    end
     notifyChange("groups", session.id)
+    if not session.autoJoin then
+        showSession(session)
+    end
 end
 
 local function completePendingJoin(session, sender)
@@ -1109,8 +1120,7 @@ local function joinGroup(name, password, targetName, savedGroup, autoJoin)
     local id = getGroupId(name)
     local active = activeGroups[id]
     if active then
-        active.window.frame:Show()
-        active.window.input:SetFocus()
+        showSession(active)
         return
     end
     if pendingJoins[id] then
@@ -1154,6 +1164,7 @@ local function joinGroup(name, password, targetName, savedGroup, autoJoin)
         markGroupRead(session)
     end
     pendingJoins[id] = session
+    notifyChange("groups", id)
     startJoinAttempt(session, 1)
 end
 
@@ -1163,6 +1174,7 @@ startJoinAttempt = function(session, candidateIndex)
     session.targetName = targetName
     if not sendGroupProtocol(session, "HELLO", targetName, session.password) then
         pendingJoins[id] = nil
+        notifyChange("groups", id)
         return
     end
 
@@ -1182,6 +1194,7 @@ startJoinAttempt = function(session, candidateIndex)
         end
 
         pendingJoins[id] = nil
+        notifyChange("groups", id)
         if session.isCreator or session.hasSavedGroup then
             showNotice("No saved group member replied. Opening your saved group locally.")
             createGroup(session.name, session.password, getSavedGroups()[id] or {
@@ -1213,8 +1226,7 @@ end
 createGroup = function(name, password, savedGroup, autoJoin)
     local id = getGroupId(name)
     if activeGroups[id] then
-        activeGroups[id].window.frame:Show()
-        activeGroups[id].window.input:SetFocus()
+        showSession(activeGroups[id])
         return
     end
     if pendingJoins[id] then
@@ -1529,7 +1541,9 @@ local function createMenuRow(index)
     menuRows[index] = row
 end
 
-local function createMenu()
+local function defineConfirmDialogs()
+    if StaticPopupDialogs.TRIALCHAT_CONFIRM_DISCONNECT then return end
+
     StaticPopupDialogs.TRIALCHAT_CONFIRM_DISCONNECT = {
         text = "Disconnect from group %s? It will remain in your saved groups.",
         button1 = YES,
@@ -1566,6 +1580,10 @@ local function createMenu()
         hideOnEscape = true,
         preferredIndex = 3,
     }
+end
+
+local function createMenu()
+    defineConfirmDialogs()
 
     menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
     menu:SetWidth(230)
@@ -1652,8 +1670,7 @@ function Groups:ToggleMenu(anchor)
             row.connect = function(groupToConnect)
                 local active = activeGroups[groupToConnect.id]
                 if active then
-                    active.window.frame:Show()
-                    active.window.input:SetFocus()
+                    showSession(active)
                 elseif #getJoinCandidates(groupToConnect) > 0 then
                     joinGroup(groupToConnect.name, groupToConnect.password,
                         groupToConnect.memberName, groupToConnect)
@@ -1700,52 +1717,156 @@ function Groups:ToggleMenu(anchor)
 end
 
 Groups.MAX_MESSAGE_BYTES = MAX_GROUP_MESSAGE_BYTES
+Groups.MAX_HISTORY = MAX_CHAT_HISTORY
 
 -- The handler is called as handler(kind, groupId, ...) where kind is "groups"
--- (a group connected or went away), "members", "unread", or "message"
--- (followed by the history entry and whether it was appended at the end).
+-- (a group connected, went away, or started or stopped connecting), "open"
+-- (show this group: you created or joined it, or asked for it again),
+-- "members", "unread", "history" (a history load started, progressed or
+-- finished), or "message" (followed by the history entry and whether it
+-- was appended at the end).
 function Groups:SetChangeHandler(handler)
     changeHandler = handler
 end
 
-function Groups:GetActiveGroups()
-    local groups = {}
-    for id, session in pairs(activeGroups) do
-        local memberCount = 0
-        for _ in pairs(session.members) do
-            memberCount = memberCount + 1
-        end
-        groups[#groups + 1] = {
-            id = id,
-            name = session.name,
-            unread = getUnreadCount(session),
-            memberCount = memberCount,
-        }
-    end
-    table.sort(groups, function(left, right)
-        return strlower(left.name) < strlower(right.name)
-    end)
-    return groups
+local function isValidSavedGroup(group)
+    return type(group) == "table" and type(group.name) == "string"
+        and type(group.password) == "string"
 end
 
-function Groups:GetMembers(id)
-    local session = activeGroups[id]
-    local members = {}
-    for _, member in pairs(session and session.members or {}) do
-        local memberIsSelf = isSelf(member.name)
-        local shortName = string.match(member.name, "^([^-]+)") or member.name
-        members[#members + 1] = {
-            name = memberIsSelf and shortName .. " (You)" or shortName,
-            fullName = member.name,
-            classFile = member.classFile,
-            isSelf = memberIsSelf,
-            isGroupMember = true,
+local function countMembers(session)
+    local count = 0
+    for _ in pairs(session.members) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Every group you're in or have saved, sorted by name. state is "online"
+-- (connected), "connecting", or "offline" (saved, not connected).
+function Groups:GetConversations()
+    local conversations = {}
+    local function add(id, name, state, session, savedGroup)
+        conversations[#conversations + 1] = {
+            id = id,
+            name = name,
+            state = state,
+            unread = session and getUnreadCount(session) or 0,
+            online = session and countMembers(session) or 0,
+            muted = (session and session.muted or savedGroup and savedGroup.muted) == true,
         }
     end
-    table.sort(members, function(left, right)
+
+    local savedGroups = getSavedGroups()
+    for id, session in pairs(activeGroups) do
+        add(id, session.name, "online", session)
+    end
+    for id, session in pairs(pendingJoins) do
+        if not activeGroups[id] then
+            add(id, session.name, "connecting", nil, savedGroups[id])
+        end
+    end
+    for id, group in pairs(savedGroups) do
+        if not activeGroups[id] and not pendingJoins[id] and isValidSavedGroup(group) then
+            add(id, group.name, "offline", nil, group)
+        end
+    end
+    table.sort(conversations, function(left, right)
         return strlower(left.name) < strlower(right.name)
     end)
-    return members
+    return conversations
+end
+
+-- Connects to a saved group, or shows it if it's already connected.
+function Groups:Connect(id)
+    local active = activeGroups[id]
+    if active then
+        showSession(active)
+        return
+    end
+    local group = getSavedGroups()[id]
+    if pendingJoins[id] or not isValidSavedGroup(group) then return end
+
+    if #getJoinCandidates(group) > 0 then
+        joinGroup(group.name, group.password, group.memberName, group)
+    else
+        createGroup(group.name, group.password, group)
+    end
+end
+
+function Groups:GetInfo(id)
+    local session = activeGroups[id]
+    if not session then return nil end
+
+    local online, offline = Groups:GetMemberList(id)
+    return {
+        name = session.name,
+        online = #online,
+        members = #online + #offline,
+        muted = session.muted == true,
+        loadingHistory = session.historyLoad ~= nil,
+        loadedHistory = session.historyLoad and session.historyLoad.added or 0,
+        isCreator = session.isCreator == true,
+    }
+end
+
+function Groups:IsCreator(id)
+    local session = activeGroups[id]
+    if session then return session.isCreator == true end
+    return savedGroupIsCreator(getSavedGroups()[id])
+end
+
+local function sortMembers(members)
+    table.sort(members, function(left, right)
+        if left.isSelf ~= right.isSelf then return left.isSelf == true end
+        return strlower(left.fullName) < strlower(right.fullName)
+    end)
+end
+
+-- Members that are online and the known members that aren't, each a list
+-- of { fullName, classFile, isSelf } with you first.
+function Groups:GetMemberList(id)
+    local session = activeGroups[id]
+    local online, offline = {}, {}
+    if not session then return online, offline end
+
+    for _, member in pairs(session.members) do
+        online[#online + 1] = {
+            fullName = member.name,
+            classFile = member.classFile or TrialChatCommon.GetKnownClass(member.name),
+            isSelf = isSelf(member.name),
+        }
+    end
+    for _, name in pairs(session.knownMembers or {}) do
+        if not isSelf(name) and not findMemberKey(session, name) then
+            -- A name typed without its realm and the same name with it
+            -- are one member; keep the one with the realm.
+            local known
+            for _, member in ipairs(offline) do
+                if namesMatch(member.fullName, name) then
+                    known = member
+                    break
+                end
+            end
+            if not known then
+                offline[#offline + 1] = {
+                    fullName = name,
+                    classFile = TrialChatCommon.GetKnownClass(name),
+                }
+            elseif not string.find(known.fullName, "-", 1, true) then
+                known.fullName = name
+                known.classFile = known.classFile or TrialChatCommon.GetKnownClass(name)
+            end
+        end
+    end
+    sortMembers(online)
+    sortMembers(offline)
+    return online, offline
+end
+
+function Groups:GetHistory(id)
+    local session = activeGroups[id]
+    return session and session.history or {}
 end
 
 function Groups:GetTotalUnreadCount()
@@ -1754,19 +1875,6 @@ function Groups:GetTotalUnreadCount()
         count = count + getUnreadCount(session)
     end
     return count
-end
-
-function Groups:GetHistoryLines(id, visibleCount)
-    local session = activeGroups[id]
-    return session and getHistoryLines(session, visibleCount) or {}
-end
-
-Groups.VISIBLE_HISTORY = VISIBLE_HISTORY
-
-function Groups:RenderMessage(id, entry)
-    local session = activeGroups[id]
-    return session and TrialChatCommon.RemovePlayerLinks(
-        renderGroupMessage(session, entry))
 end
 
 function Groups:SetViewedGroup(id)
@@ -1785,6 +1893,18 @@ function Groups:SendMessage(id, message)
     end
 end
 
+function Groups:SetMuted(id, muted)
+    local session = activeGroups[id]
+    local savedGroup = getSavedGroups()[id]
+    if session then
+        session.muted = muted == true
+        persistGroup(session)
+    elseif type(savedGroup) == "table" then
+        savedGroup.muted = muted == true
+    end
+    notifyChange("groups", id)
+end
+
 function Groups:LoadHistory(id)
     local session = activeGroups[id]
     if session then
@@ -1792,20 +1912,32 @@ function Groups:LoadHistory(id)
     end
 end
 
--- Returns whether a history load is running for the group and how many
--- messages it has added so far.
-function Groups:GetHistoryLoadState(id)
-    local session = activeGroups[id]
-    local load = session and session.historyLoad
-    return load ~= nil, load and load.added or 0
-end
-
-Groups.MAX_HISTORY = MAX_CHAT_HISTORY
-
 function Groups:OpenWindow(id)
     local session = activeGroups[id]
     if session then
         createGroupWindow(session)
+    end
+end
+
+-- mode is "create" or "join".
+function Groups:ShowDialog(mode)
+    openGroupDialog(mode)
+end
+
+-- action is "disconnect", "exit" or "delete"; each asks for confirmation.
+function Groups:Confirm(action, id)
+    local session = activeGroups[id]
+    local savedGroup = getSavedGroups()[id]
+    local name = session and session.name or (type(savedGroup) == "table" and savedGroup.name)
+    if not name then return end
+
+    defineConfirmDialogs()
+    if action == "disconnect" then
+        StaticPopup_Show("TRIALCHAT_CONFIRM_DISCONNECT", name, nil, id)
+    elseif action == "exit" then
+        StaticPopup_Show("TRIALCHAT_CONFIRM_EXIT", name, nil, id)
+    elseif action == "delete" then
+        StaticPopup_Show("TRIALCHAT_CONFIRM_DELETE", name, nil, id)
     end
 end
 
@@ -1942,6 +2074,7 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             local member = memberKey and session.members[memberKey]
             if member then
                 member.classFile = body
+                TrialChatCommon.RememberClass(member.name, body, true)
                 if session.window then
                     session.window:UpdateMembers()
                 end

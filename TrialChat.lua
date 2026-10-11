@@ -9,15 +9,20 @@ local MAX_CHAT_MESSAGE_BYTES = 1000
 local PART_TAG = "P:"
 local NEARBY_PART_BYTES = 230
 local MAX_CHAT_HISTORY = 1000
-local VISIBLE_HISTORY = 200
 local LISTENER_TIMEOUT = 35
 local PING_INTERVAL = 30
 local PING_BUDGET = 4
+local LISTENER_CHANGE_DELAY = 0.2
 
 if not C_ChatInfo.RegisterAddonMessagePrefix(PREFIX) then
     print("|cffff3333[TrialChat] Could not register the addon-message prefix.|r")
     return
 end
+
+-- Nearby chat: talking to TrialChat users around you (and the listeners
+-- you keep), shown in the TrialChat window through this table.
+TrialChatNearby = {}
+local Nearby = TrialChatNearby
 
 local activeListeners = {}
 local incomingParts = TrialChatCommon.NewPartCollector()
@@ -31,76 +36,31 @@ local fullPlayerName = TrialChatCommon.GetPlayerFullName()
 local playerRealm = TrialChatCommon.GetPlayerRealm()
 local playerClass = TrialChatCommon.GetPlayerClass()
 local classByName = {}
-local recipientListGeneration = 0
-local lastRenderedRecipientGeneration
 local minimapButton
-local chatWindow
-local chatLog
-local chatInput
-local openChatWindow
 local sendTrialChatMessage
 local showTrialChatNotice
 local slashOpenHooks = {}
-local recipientList
-local recipientRows = {}
-local recipientScrollFrame
-local recipientTitle
-local recipientPanel
-local recipientToggleButton
-local nearbyCountText
-local activeCountText
-local addListenerInput
-local addListenerButton
-local listenersExpanded = false
-local updateRecipientList
-local updateChatContentLayout
-local RECIPIENT_ROW_HEIGHT = 18
-local CHAT_WINDOW_IDLE_ALPHA = 0.45
-local CHAT_MESSAGE_VISIBLE_SECONDS = 7
-local lastChatMessageAt
-local NEARBY_TAB = "nearby"
-local TAB_TOP = -56
-local TAB_HEIGHT = 20
-local TAB_GAP = 2
-local MORE_TABS_WIDTH = 64
-local selectedTab = NEARBY_TAB
-local nearbyUnread = 0
-local tabButtons = {}
-local tabMeasureText
-local moreTabsButton
-local groupHistoryButton
-local visibleCount = VISIBLE_HISTORY
-local groupLogRenderPending = false
-local overflowTabs = {}
-local selectTab
-local layoutTabs
+local changeHandler
+local listenerChangePending = false
 
-local function updateChatWindowAlpha()
-    if not chatWindow then return end
-
-    local mouseOverChat = chatWindow:IsShown() and chatWindow:IsMouseOver()
-    local mouseOverListeners = recipientPanel
-        and recipientPanel:IsShown()
-        and recipientPanel:IsMouseOver()
-    local inputHasFocus = (chatInput and chatInput:HasFocus())
-        or (addListenerInput and addListenerInput:HasFocus())
-    local recentMessage = lastChatMessageAt
-        and GetTime() - lastChatMessageAt < CHAT_MESSAGE_VISIBLE_SECONDS
-    local alpha = (mouseOverChat or mouseOverListeners or inputHasFocus or recentMessage)
-        and 1 or CHAT_WINDOW_IDLE_ALPHA
-
-    TrialChatCommon.FadeTo(chatWindow, alpha)
-    if recipientPanel then
-        TrialChatCommon.FadeTo(recipientPanel, alpha)
+local function notifyChange(kind, ...)
+    if changeHandler then
+        changeHandler(kind, ...)
     end
 end
 
-local function noteChatMessage()
-    lastChatMessageAt = GetTime()
-    updateChatWindowAlpha()
-    C_Timer.After(CHAT_MESSAGE_VISIBLE_SECONDS, updateChatWindowAlpha)
+-- Pings and pongs come in bursts; tell the window about them once.
+local function notifyListenersChanged()
+    if listenerChangePending then return end
+    listenerChangePending = true
+    C_Timer.After(LISTENER_CHANGE_DELAY, function()
+        listenerChangePending = false
+        notifyChange("listeners")
+    end)
 end
 
+-- Nearby history: entries of { sender, message, isEmote, timestamp }.
+-- Older versions saved ready-made chat lines, which are kept as they are.
 local function getChatHistory()
     TrialChatDB = TrialChatDB or {}
     if type(TrialChatDB.chatHistory) ~= "table" then
@@ -109,9 +69,9 @@ local function getChatHistory()
     return TrialChatDB.chatHistory
 end
 
-local function saveChatHistoryLine(line)
+local function saveChatHistoryEntry(entry)
     local history = getChatHistory()
-    history[#history + 1] = line
+    history[#history + 1] = entry
     local overflow = #history - MAX_CHAT_HISTORY
     if overflow <= 0 then return end
 
@@ -122,28 +82,9 @@ local function saveChatHistoryLine(line)
     TrialChatDB.chatHistory = compacted
 end
 
-local function saveChatWindowSettings()
-    if not chatWindow then return end
-
-    local centerX, centerY = chatWindow:GetCenter()
-    local parentWidth, parentHeight = UIParent:GetSize()
-    if not centerX or not centerY or parentWidth <= 0 or parentHeight <= 0 then return end
-
-    TrialChatDB = TrialChatDB or {}
-    TrialChatDB.chatWindow = {
-        width = chatWindow:GetWidth(),
-        height = chatWindow:GetHeight(),
-        centerX = centerX / parentWidth,
-        centerY = centerY / parentHeight,
-    }
-end
-
 local normalizeName = TrialChatCommon.NormalizeName
 local normalizeCharacterName = TrialChatCommon.NormalizeCharacterName
-
-local function markRecipientListDirty()
-    recipientListGeneration = recipientListGeneration + 1
-end
+local getShortName = TrialChatCommon.ShortName
 
 local function noteActiveListener(name)
     if not name then return end
@@ -158,7 +99,7 @@ local function noteActiveListener(name)
     local isNew = activeListeners[listenerKey] == nil
     activeListeners[listenerKey] = GetTime()
     if isNew then
-        markRecipientListDirty()
+        notifyListenersChanged()
     end
 end
 
@@ -200,7 +141,7 @@ local function getFullName(unit)
     return name
 end
 
-local function rememberClass(fullName, classFile)
+local function rememberClass(fullName, classFile, keep)
     if not fullName or not classFile or not RAID_CLASS_COLORS[classFile] then return end
 
     classByName[normalizeName(fullName)] = classFile
@@ -208,6 +149,7 @@ local function rememberClass(fullName, classFile)
     if shortName then
         classByName[normalizeName(shortName)] = classFile
     end
+    TrialChatCommon.RememberClass(fullName, classFile, keep)
 end
 
 local function rememberUnitClass(unit, fullName)
@@ -215,13 +157,11 @@ local function rememberUnitClass(unit, fullName)
     rememberClass(fullName, classFile)
 end
 
-local getClassColor = TrialChatCommon.GetClassColor
-
-local function getKnownNameColor(name, fallback)
+local function getKnownClass(name)
     local shortName = string.match(name or "", "^([^-]+)")
-    local classFile = classByName[normalizeName(name)]
+    return classByName[normalizeName(name)]
         or shortName and classByName[normalizeName(shortName)]
-    return getClassColor(classFile) or fallback
+        or TrialChatCommon.GetKnownClass(name)
 end
 
 local isSelf = TrialChatCommon.IsSelf
@@ -243,226 +183,23 @@ local function getGroupMembers()
     return members
 end
 
-local function getTrialChatRecipients()
-    local recipients, recipientsByName = {}, {}
-    getGroupMembers()
-
-    local selfKey = normalizeName(fullPlayerName or playerName)
-    local selfShortName = string.match(playerName, "^([^-]+)") or playerName
-    recipientsByName[selfKey] = true
-    recipients[#recipients + 1] = {
-        name = selfShortName .. " (You)",
-        classFile = playerClass,
-        isSelf = true,
+local function addNearbyMessage(sender, message, isEmote)
+    local entry = {
+        sender = sender,
+        message = message,
+        isEmote = isEmote or nil,
+        timestamp = GetServerTime(),
     }
-
-    local permanentListeners = getPermanentListeners()
-    local activeByName, activeByShortName = {}, {}
-    for targetPlayer in pairs(activeListeners) do
-        if not isSelf(targetPlayer) then
-            local targetKey = normalizeName(targetPlayer)
-            local shortName = string.match(targetPlayer, "^([^-]+)") or targetPlayer
-            local recipient = {
-                name = shortName,
-                classFile = classByName[targetKey] or classByName[normalizeName(shortName)],
-                fullName = targetPlayer,
-            }
-            activeByName[targetKey] = recipient
-            activeByShortName[normalizeName(shortName)] = recipient
-        end
-    end
-
-    for targetKey, targetPlayer in pairs(permanentListeners) do
-        if not isSelf(targetPlayer) then
-            local normalizedKey = normalizeName(targetKey)
-            local shortName = string.match(targetPlayer, "^([^-]+)") or targetPlayer
-            local recipient = activeByName[normalizedKey]
-            if not recipient and not string.find(targetPlayer, "-", 1, true) then
-                recipient = activeByShortName[normalizeName(shortName)]
-            end
-
-            if recipient then
-                recipient.permanent = true
-            else
-                activeByName[normalizedKey] = {
-                    name = shortName,
-                    classFile = classByName[normalizedKey] or classByName[normalizeName(shortName)],
-                    fullName = targetPlayer,
-                    permanent = true,
-                }
-            end
-        end
-    end
-
-    for targetKey, recipient in pairs(activeByName) do
-        if not recipientsByName[targetKey] then
-            recipientsByName[targetKey] = true
-            recipients[#recipients + 1] = recipient
-        end
-    end
-
-    table.sort(recipients, function(left, right)
-        return strlower(left.name) < strlower(right.name)
-    end)
-    return recipients
-end
-
-local function createRecipientRow(index)
-    local row = CreateFrame("Button", nil, recipientPanel)
-    row:SetHeight(RECIPIENT_ROW_HEIGHT)
-    row:SetPoint("TOPLEFT", recipientScrollFrame, "TOPLEFT",
-        2, -(index - 1) * RECIPIENT_ROW_HEIGHT)
-    row:SetPoint("RIGHT", recipientScrollFrame, "RIGHT", -18, 0)
-    row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.label:SetAllPoints()
-    row.label:SetJustifyH("LEFT")
-    row.label:SetWordWrap(false)
-    row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    row:SetScript("OnClick", function(self, button)
-        if self.isSelf then return end
-
-        if button == "RightButton" then
-            TrialChatCommon.ShowPlayerOptions(
-                self.recipientName, self.recipientName, button)
-            return
-        end
-        if self.isGroupMember then return end
-
-        local permanentListeners = getPermanentListeners()
-        local existingKey = findPermanentListenerKey(self.recipientName)
-        if existingKey then
-            permanentListeners[existingKey] = nil
-        else
-            permanentListeners[normalizeName(self.recipientName)] = self.recipientName
-        end
-        markRecipientListDirty()
-        updateRecipientList(true)
-    end)
-    row:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        local tooltipText
-        if self.isSelf then
-            tooltipText = "This is you."
-        elseif self.isGroupMember then
-            tooltipText = "Right-click for player options."
-        elseif findPermanentListenerKey(self.recipientName) then
-            tooltipText = "Left-click to stop keeping this listener.\nRight-click for player options."
-        else
-            tooltipText = "Left-click to keep this listener permanently.\nRight-click for player options."
-        end
-        GameTooltip:SetText(tooltipText)
-        GameTooltip:Show()
-    end)
-    row:SetScript("OnLeave", GameTooltip_Hide)
-    recipientRows[index] = row
-end
-
-updateRecipientList = function(force)
-    if not recipientScrollFrame or not recipientTitle then return end
-    if not force and lastRenderedRecipientGeneration == recipientListGeneration then
-        return
-    end
-    lastRenderedRecipientGeneration = recipientListGeneration
-
-    if selectedTab == NEARBY_TAB then
-        recipientList = getTrialChatRecipients()
+    saveChatHistoryEntry(entry)
+    if changeHandler then
+        notifyChange("message", entry)
     else
-        recipientList = TrialChatGroups:GetMembers(selectedTab)
-    end
-    while #recipientRows < #recipientList do
-        createRecipientRow(#recipientRows + 1)
-    end
-    local nearbyNames = {}
-    for targetPlayer in pairs(activeListeners) do
-        if not isSelf(targetPlayer) then
-            nearbyNames[normalizeName(targetPlayer)] = true
-        end
-    end
-    local nearbyCount = 0
-    for _ in pairs(nearbyNames) do
-        nearbyCount = nearbyCount + 1
-    end
-    if selectedTab == NEARBY_TAB then
-        nearbyCountText:SetText("Nearby Players (" .. nearbyCount .. ")")
-        activeCountText:SetText("Active listeners (" .. #recipientList .. ")")
-        recipientTitle:SetText("Active listeners (" .. #recipientList .. ")")
-    else
-        recipientTitle:SetText("Members (" .. #recipientList .. ")")
-    end
-    if recipientToggleButton then
-        recipientToggleButton:SetText(listenersExpanded and "<" or ">")
-    end
-
-    local visibleRows = math.max(1,
-        math.floor(recipientScrollFrame:GetHeight() / RECIPIENT_ROW_HEIGHT))
-    FauxScrollFrame_Update(recipientScrollFrame, #recipientList, visibleRows, RECIPIENT_ROW_HEIGHT)
-
-    local offset = FauxScrollFrame_GetOffset(recipientScrollFrame)
-    for index, row in ipairs(recipientRows) do
-        local recipient = recipientList[offset + index]
-        if listenersExpanded and recipient and index <= visibleRows then
-            local color = getClassColor(recipient.classFile)
-            local name = recipient.name .. (recipient.permanent and " |cff00ff00*" or "")
-            row.label:SetText(color and color .. name .. "|r" or name)
-            row.recipientName = recipient.fullName
-            row.isSelf = recipient.isSelf
-            row.isGroupMember = recipient.isGroupMember
-            row:Show()
-        else
-            row:Hide()
-        end
+        print(getShortName(sender) .. (isEmote and " " or ": ") .. message)
     end
 end
 
-updateChatContentLayout = function()
-    if not chatLog or not chatInput then return end
-
-    chatLog:ClearAllPoints()
-    chatLog:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 14, TAB_TOP - TAB_HEIGHT - 4)
-    chatLog:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -28, 48)
-    chatInput:ClearAllPoints()
-    chatInput:SetHeight(26)
-    chatInput:SetPoint("BOTTOMLEFT", chatWindow, "BOTTOMLEFT", 14, 14)
-    chatInput:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -14, 14)
-end
-
-local function printMessage(sender, message, color, nameColor, isEmote, senderKey)
-    message = TrialChatCommon.FormatMessageText(message)
-    nameColor = isEmote and color
-        or getKnownNameColor(senderKey or sender, nameColor or color)
-    local line = color .. "[" .. date("%H:%M") .. "] "
-        .. nameColor .. sender
-    if isEmote then
-        line = line .. " " .. message .. "|r"
-    else
-        line = line .. "|r:|r " .. message
-    end
-    saveChatHistoryLine(line)
-    if openChatWindow then
-        -- A closed window reopens on the Nearby tab; an open one stays on
-        -- whatever tab is showing and counts the message as unread.
-        local switchedTab = false
-        if selectedTab ~= NEARBY_TAB and not chatWindow:IsShown() then
-            selectTab(NEARBY_TAB)
-            switchedTab = true
-        end
-        openChatWindow(false)
-        noteChatMessage()
-        if selectedTab ~= NEARBY_TAB then
-            nearbyUnread = nearbyUnread + 1
-            layoutTabs()
-        elseif not switchedTab then
-            TrialChatCommon.AddChatLogMessage(chatLog, line)
-        end
-    else
-        print(line)
-    end
-end
-
-local function printIncomingMessage(
-    label, sender, message, color, nameColor, senderKey, isEmote)
-    local key = normalizeCharacterName(senderKey or sender) .. "\0" .. message
+local function printIncomingMessage(label, sender, message, isEmote)
+    local key = normalizeCharacterName(sender) .. "\0" .. message
         .. "\0" .. tostring(isEmote)
     local now = GetTime()
     local pending = pendingIncomingMessages[key]
@@ -475,9 +212,6 @@ local function printIncomingMessage(
         if isNewAudience and GetTime() - pending.receivedAt <= 0.2 then
             pending.groupLabel = isGroupMessage and label or pending.groupLabel
             pending.nearby = pending.nearby or isNearbyMessage
-            pending.nameColor = getKnownNameColor(senderKey or sender,
-                pending.nameColor or nameColor or pending.color)
-            pending.color = pending.groupLabel and "|cffff7d0a" or color
             pending.isEmote = isEmote
             return
         end
@@ -488,8 +222,7 @@ local function printIncomingMessage(
 
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
-            printMessage(pending.sender, pending.message,
-                pending.color, pending.nameColor, pending.isEmote, pending.senderKey)
+            addNearbyMessage(pending.sender, pending.message, pending.isEmote)
         end
     elseif recentIncomingMessages[key]
         and now - recentIncomingMessages[key].receivedAt
@@ -508,9 +241,6 @@ local function printIncomingMessage(
     pending = {
         sender = sender,
         message = message,
-        color = color,
-        nameColor = getKnownNameColor(senderKey or sender, nameColor or color),
-        senderKey = senderKey,
         groupLabel = isGroupMessage and label or nil,
         nearby = isNearbyMessage,
         receivedAt = GetTime(),
@@ -521,597 +251,35 @@ local function printIncomingMessage(
     C_Timer.After(0.2, function()
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
-            printMessage(pending.sender, pending.message,
-                pending.color, pending.nameColor, pending.isEmote, pending.senderKey)
+            addNearbyMessage(pending.sender, pending.message, pending.isEmote)
         end
     end)
 end
 
--- Up to MAX_CHAT_HISTORY lines are stored, but only the newest visibleCount
--- are drawn; a link on top shows older ones on request.
-local function renderNearbyLog(keepPosition)
-    local history = getChatHistory()
-    local first = math.max(1, #history - visibleCount + 1)
-    local lines = {}
-    if first > 1 then
-        lines[1] = TrialChatCommon.GetOlderMessagesLine(first - 1)
-    end
-    for index = first, #history do
-        if type(history[index]) == "string" then
-            lines[#lines + 1] = TrialChatCommon.RemovePlayerLinks(history[index])
-        end
-    end
-    TrialChatCommon.SetChatLogLines(chatLog, lines, keepPosition)
-end
-
-local function renderGroupLog(id, keepPosition)
-    TrialChatCommon.SetChatLogLines(chatLog,
-        TrialChatGroups:GetHistoryLines(id, visibleCount), keepPosition)
-end
-
-local function getTabs()
-    local tabs = {
-        { key = NEARBY_TAB, name = "Nearby", unread = nearbyUnread },
-    }
-    if TrialChatGroups then
-        for _, group in ipairs(TrialChatGroups:GetActiveGroups()) do
-            tabs[#tabs + 1] = {
-                key = group.id,
-                name = group.name,
-                unread = group.unread,
-                memberCount = group.memberCount,
-            }
-        end
-    end
-    return tabs
-end
-
-local function getTabLabel(tab)
-    if tab.unread > 0 then
-        return tab.name .. " |cffff7d0a(" .. tab.unread .. ")|r"
-    end
-    return tab.name
-end
-
-local function createTabButton(index)
-    local button = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
-    button:SetHeight(TAB_HEIGHT)
-    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    button:SetScript("OnClick", function(self, mouseButton)
-        if mouseButton == "RightButton" then
-            if self.tabKey ~= NEARBY_TAB then
-                TrialChatGroups:OpenWindow(self.tabKey)
-            end
-            return
-        end
-        selectTab(self.tabKey)
-    end)
-    button:SetScript("OnEnter", function(self)
-        if self.tabKey == NEARBY_TAB then return end
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Right-click to open in its own window.")
-        GameTooltip:Show()
-    end)
-    button:SetScript("OnLeave", GameTooltip_Hide)
-    tabButtons[index] = button
-    return button
-end
-
-local function createMoreTabsButton()
-    local button = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
-    button:SetSize(MORE_TABS_WIDTH, TAB_HEIGHT)
-    button:SetNormalFontObject("GameFontNormalSmall")
-    button:SetScript("OnClick", function(self)
-        MenuUtil.CreateContextMenu(self, function(_, rootDescription)
-            for _, tab in ipairs(overflowTabs) do
-                local key = tab.key
-                rootDescription:CreateButton(getTabLabel(tab), function()
-                    selectTab(key)
-                end)
-            end
-        end)
-    end)
-    return button
-end
-
-layoutTabs = function()
-    if not chatWindow or not tabMeasureText then return end
-
-    local tabs = getTabs()
-    local selected
-    for _, tab in ipairs(tabs) do
-        if tab.key == selectedTab then
-            selected = tab
-        end
-    end
-    if not selected then
-        selectTab(NEARBY_TAB)
-        return
-    end
-
-    local available = chatWindow:GetWidth() - 28
-    local total = 0
-    for _, tab in ipairs(tabs) do
-        tabMeasureText:SetText(getTabLabel(tab))
-        tab.width = math.max(48, math.ceil(tabMeasureText:GetStringWidth()) + 20)
-        total = total + tab.width + TAB_GAP
-    end
-    local limit = available
-    if total - TAB_GAP > available then
-        limit = available - MORE_TABS_WIDTH - TAB_GAP
-    end
-
-    local visible, overflow = {}, {}
-    local used = 0
-    for index, tab in ipairs(tabs) do
-        if index == 1 or (#overflow == 0 and used + tab.width <= limit) then
-            visible[#visible + 1] = tab
-            used = used + tab.width + TAB_GAP
-        else
-            overflow[#overflow + 1] = tab
-        end
-    end
-    -- Keep the selected tab visible by moving tabs before it into "More".
-    for index, tab in ipairs(overflow) do
-        if tab == selected then
-            table.remove(overflow, index)
-            while #visible > 1 and used + selected.width > limit do
-                local dropped = table.remove(visible)
-                used = used - dropped.width - TAB_GAP
-                table.insert(overflow, 1, dropped)
-            end
-            visible[#visible + 1] = selected
-            break
-        end
-    end
-
-    local x = 14
-    for index, tab in ipairs(visible) do
-        local button = tabButtons[index] or createTabButton(index)
-        button.tabKey = tab.key
-        button:SetText(getTabLabel(tab))
-        button:SetWidth(tab.width)
-        button:ClearAllPoints()
-        button:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", x, TAB_TOP)
-        if tab == selected then
-            button:SetNormalFontObject("GameFontHighlightSmall")
-            button:LockHighlight()
-        else
-            button:SetNormalFontObject("GameFontNormalSmall")
-            button:UnlockHighlight()
-        end
-        button:Show()
-        x = x + tab.width + TAB_GAP
-    end
-    for index = #visible + 1, #tabButtons do
-        tabButtons[index]:Hide()
-    end
-
-    overflowTabs = overflow
-    if #overflow > 0 then
-        moreTabsButton = moreTabsButton or createMoreTabsButton()
-        local unread = 0
-        for _, tab in ipairs(overflow) do
-            unread = unread + tab.unread
-        end
-        moreTabsButton:SetText(unread > 0
-            and "More |cffff7d0a(" .. unread .. ")|r" or "More")
-        moreTabsButton:ClearAllPoints()
-        moreTabsButton:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", x, TAB_TOP)
-        moreTabsButton:Show()
-    elseif moreTabsButton then
-        moreTabsButton:Hide()
-    end
-
-    if selectedTab ~= NEARBY_TAB then
-        nearbyCountText:SetText(selected.name)
-        activeCountText:SetText("Online members (" .. selected.memberCount .. ")")
-        local loading, added = TrialChatGroups:GetHistoryLoadState(selectedTab)
-        groupHistoryButton:SetText(loading and ("Loading... " .. added) or "Load history")
-        groupHistoryButton:SetEnabled(not loading)
-        groupHistoryButton:Show()
+showTrialChatNotice = function(message, isError)
+    if changeHandler then
+        notifyChange("notice", message, isError)
     else
-        groupHistoryButton:Hide()
+        print("|cffff7d0a[TrialChat]|r " .. message)
     end
 end
 
--- The side panel lists nearby listeners on the Nearby tab and the group's
--- members on a group tab; only listeners can be added by name.
-local function updateRecipientPanelMode()
-    local isNearby = selectedTab == NEARBY_TAB
-    addListenerInput:SetShown(isNearby)
-    addListenerButton:SetShown(isNearby)
-    recipientScrollFrame:SetPoint("BOTTOMRIGHT", recipientPanel, "BOTTOMRIGHT",
-        -24, isNearby and 38 or 6)
-end
-
-selectTab = function(key)
-    if not chatWindow then return end
-
-    selectedTab = key
-    visibleCount = VISIBLE_HISTORY
-    if key == NEARBY_TAB then
-        nearbyUnread = 0
-        if TrialChatGroups then
-            TrialChatGroups:SetViewedGroup(nil)
-        end
-        renderNearbyLog()
-        chatInput:SetMaxLetters(MAX_CHAT_MESSAGE_BYTES)
-    else
-        TrialChatGroups:SetViewedGroup(chatWindow:IsShown() and key or nil)
-        renderGroupLog(key)
-        chatInput:SetMaxLetters(TrialChatGroups.MAX_MESSAGE_BYTES)
+local function showMinimapTooltip(button)
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:ClearLines()
+    GameTooltip:AddLine("TrialChat")
+    GameTooltip:AddLine(
+        TrialChatMessenger:IsShown() and "Click to hide TrialChat."
+            or "Click to show TrialChat.",
+        1, 1, 1)
+    local unread = TrialChatGroups and TrialChatGroups:GetTotalUnreadCount() or 0
+    if unread > 0 then
+        GameTooltip:AddLine(unread .. " unread group message"
+            .. (unread == 1 and "" or "s") .. ".", 1, 0.49, 0.04)
     end
-    updateRecipientPanelMode()
-    updateRecipientList(true)
-    layoutTabs()
-end
-
--- Older messages arriving in a burst (history loading) would otherwise
--- redraw the whole log once per message.
-local function scheduleGroupLogRender()
-    if groupLogRenderPending then return end
-    groupLogRenderPending = true
-    C_Timer.After(0.3, function()
-        groupLogRenderPending = false
-        if selectedTab ~= NEARBY_TAB then
-            renderGroupLog(selectedTab, true)
-        end
-    end)
-end
-
-local function onGroupsChanged(kind, id, entry, appended)
-    if not chatWindow then return end
-
-    if kind == "message" and id == selectedTab then
-        if appended then
-            TrialChatCommon.AddChatLogMessage(chatLog,
-                TrialChatGroups:RenderMessage(id, entry),
-                TrialChatCommon.IsSelf(entry.sender))
-        else
-            scheduleGroupLogRender()
-        end
-        if chatWindow:IsShown() then
-            noteChatMessage()
-        end
-    end
-    if kind == "members" and id == selectedTab then
-        updateRecipientList(true)
-    end
-    layoutTabs()
-end
-
-local function createChatWindow()
-    if chatWindow then return end
-
-    TrialChatDB = TrialChatDB or {}
-    chatWindow = CreateFrame("Frame", "TrialChatWindow", UIParent, "BackdropTemplate")
-    local savedSettings = TrialChatDB.chatWindow
-    local width = type(savedSettings) == "table" and tonumber(savedSettings.width) or 420
-    local height = type(savedSettings) == "table" and tonumber(savedSettings.height) or 420
-    width = math.max(320, math.min(900, width or 420))
-    height = math.max(320, math.min(900, height or 420))
-    chatWindow:SetSize(width, height)
-    chatWindow:SetFrameStrata("DIALOG")
-    chatWindow:SetFrameLevel(100)
-    chatWindow:SetMovable(true)
-    chatWindow:SetResizable(true)
-    chatWindow:SetResizeBounds(320, 320, 900, 900)
-    chatWindow:SetClampedToScreen(true)
-    local centerX = type(savedSettings) == "table" and tonumber(savedSettings.centerX)
-    local centerY = type(savedSettings) == "table" and tonumber(savedSettings.centerY)
-    if centerX and centerY then
-        local parentWidth, parentHeight = UIParent:GetSize()
-        chatWindow:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
-            centerX * parentWidth, centerY * parentHeight)
-    else
-        chatWindow:SetPoint("CENTER")
-    end
-    chatWindow:EnableMouse(true)
-    chatWindow:RegisterForDrag("LeftButton")
-    chatWindow:SetScript("OnDragStart", chatWindow.StartMoving)
-    chatWindow:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        saveChatWindowSettings()
-    end)
-    chatWindow:HookScript("OnEnter", updateChatWindowAlpha)
-    TrialChatCommon.WatchHover(chatWindow, updateChatWindowAlpha)
-    chatWindow:HookScript("OnLeave", updateChatWindowAlpha)
-    chatWindow:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    chatWindow:SetBackdropColor(0.04, 0.04, 0.04, 0.95)
-    chatWindow:SetAlpha(CHAT_WINDOW_IDLE_ALPHA)
-
-    local title = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOP", chatWindow, "TOP", 0, -12)
-    title:SetText("TrialChat")
-
-    nearbyCountText = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    nearbyCountText:SetPoint("TOP", title, "BOTTOM", 0, -3)
-    nearbyCountText:SetJustifyH("CENTER")
-
-    activeCountText = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    activeCountText:SetPoint("TOP", nearbyCountText, "BOTTOM", 0, -2)
-    activeCountText:SetJustifyH("CENTER")
-
-    local closeButton = CreateFrame("Button", nil, chatWindow, "UIPanelCloseButton")
-    closeButton:SetPoint("TOPRIGHT", chatWindow, "TOPRIGHT", -2, -2)
-    closeButton:SetScript("OnClick", function()
-        chatWindow:Hide()
-    end)
-
-    recipientPanel = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
-    recipientPanel:SetPoint("TOPLEFT", chatWindow, "TOPRIGHT", 0, 0)
-    recipientPanel:SetPoint("BOTTOMLEFT", chatWindow, "BOTTOMRIGHT", 0, 0)
-    recipientPanel:SetWidth(170)
-    recipientPanel:SetFrameStrata("DIALOG")
-    recipientPanel:SetFrameLevel(100)
-    recipientPanel:EnableMouse(true)
-    recipientPanel:HookScript("OnEnter", updateChatWindowAlpha)
-    recipientPanel:HookScript("OnLeave", updateChatWindowAlpha)
-    recipientPanel:SetBackdrop({
-        bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-        tile = true,
-        tileSize = 16,
-        edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
-    recipientPanel:SetBackdropColor(0.02, 0.02, 0.02, 0.75)
-    recipientPanel:SetAlpha(CHAT_WINDOW_IDLE_ALPHA)
-
-    recipientTitle = recipientPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    recipientTitle:SetPoint("TOP", recipientPanel, "TOP", 0, -8)
-    recipientTitle:SetJustifyH("CENTER")
-    recipientTitle:SetText("Active listeners")
-
-    listenersExpanded = false
-    local function getToggleTooltip()
-        local listName = selectedTab == NEARBY_TAB and "listeners" or "members"
-        return (listenersExpanded and "Hide " or "Show ") .. listName
-    end
-    recipientToggleButton = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
-    recipientToggleButton:SetSize(22, 18)
-    recipientToggleButton:SetPoint("LEFT", activeCountText, "RIGHT", 4, 0)
-    recipientToggleButton:SetScript("OnClick", function()
-        listenersExpanded = not listenersExpanded
-        if chatWindow:IsShown() and listenersExpanded then
-            recipientPanel:Show()
-        else
-            recipientPanel:Hide()
-        end
-        updateRecipientList(true)
-        if GameTooltip:GetOwner() == recipientToggleButton then
-            GameTooltip:SetText(getToggleTooltip())
-        end
-    end)
-    recipientToggleButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText(getToggleTooltip())
-        GameTooltip:Show()
-    end)
-    recipientToggleButton:SetScript("OnLeave", GameTooltip_Hide)
-
-    recipientScrollFrame = CreateFrame(
-        "ScrollFrame", "TrialChatRecipientsScrollFrame", recipientPanel, "FauxScrollFrameTemplate")
-    recipientScrollFrame:EnableMouseWheel(true)
-    recipientScrollFrame:SetPoint("TOPLEFT", recipientPanel, "TOPLEFT", 6, -48)
-    recipientScrollFrame:SetPoint("BOTTOMRIGHT", recipientPanel, "BOTTOMRIGHT", -24, 6)
-    recipientScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(
-            self, offset, RECIPIENT_ROW_HEIGHT, function()
-                updateRecipientList(true)
-            end)
-    end)
-    recipientScrollFrame:SetScript("OnMouseWheel", function(self, delta)
-        local scrollBar = self.ScrollBar
-            or _G[self:GetName() .. "ScrollBar"]
-        if scrollBar then
-            scrollBar:SetValue(scrollBar:GetValue() - delta * RECIPIENT_ROW_HEIGHT)
-        end
-    end)
-
-    addListenerInput = CreateFrame("EditBox", nil, recipientPanel, "InputBoxTemplate")
-    addListenerInput:SetSize(112, 24)
-    addListenerInput:SetPoint("BOTTOMLEFT", recipientPanel, "BOTTOMLEFT", 8, 8)
-    addListenerInput:SetAutoFocus(false)
-    addListenerInput:SetMaxLetters(64)
-    addListenerInput:HookScript("OnEditFocusGained", updateChatWindowAlpha)
-    addListenerInput:HookScript("OnEditFocusLost", updateChatWindowAlpha)
-    addListenerInput:SetScript("OnEnterPressed", function(self)
-        local name = strtrim(self:GetText() or "")
-        if name == "" then return end
-
-        if isSelf(name) then
-            showTrialChatNotice("|cffff3333[TrialChat] You are already in the listener list.|r")
-            return
-        end
-        if string.find(name, "[%c%s|]") then
-            showTrialChatNotice("|cffff3333[TrialChat] Enter a character name, optionally followed by -Realm.|r")
-            return
-        end
-
-        local key = normalizeName(name)
-        local permanentListeners = getPermanentListeners()
-        if permanentListeners[key] then
-            showTrialChatNotice("|cffff3333[TrialChat] That listener is already saved.|r")
-            return
-        end
-
-        permanentListeners[key] = name
-        self:SetText("")
-        markRecipientListDirty()
-        updateRecipientList(true)
-    end)
-    addListenerInput:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-    end)
-
-    addListenerButton = CreateFrame("Button", nil, recipientPanel, "UIPanelButtonTemplate")
-    addListenerButton:SetSize(38, 22)
-    addListenerButton:SetPoint("LEFT", addListenerInput, "RIGHT", 4, 0)
-    addListenerButton:SetText("Add")
-    addListenerButton:SetScript("OnClick", function()
-        addListenerInput:GetScript("OnEnterPressed")(addListenerInput)
-    end)
-
-    recipientScrollFrame:ClearAllPoints()
-    recipientScrollFrame:SetPoint("TOPLEFT", recipientPanel, "TOPLEFT", 6, -32)
-    recipientScrollFrame:SetPoint("BOTTOMRIGHT", recipientPanel, "BOTTOMRIGHT", -24, 38)
-
-    recipientPanel:SetScript("OnSizeChanged", function()
-        updateRecipientList(true)
-    end)
-    recipientPanel:Hide()
-
-    chatWindow:SetScript("OnShow", function()
-        if listenersExpanded then
-            recipientPanel:Show()
-        end
-        if selectedTab == NEARBY_TAB then
-            nearbyUnread = 0
-        elseif TrialChatGroups then
-            TrialChatGroups:SetViewedGroup(selectedTab)
-        end
-        layoutTabs()
-        updateChatWindowAlpha()
-    end)
-    chatWindow:SetScript("OnHide", function()
-        recipientPanel:Hide()
-        if TrialChatGroups then
-            TrialChatGroups:SetViewedGroup(nil)
-        end
-    end)
-    chatWindow:HookScript("OnSizeChanged", function()
-        layoutTabs()
-    end)
-    tabMeasureText = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    tabMeasureText:Hide()
-
-    groupHistoryButton = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
-    groupHistoryButton:SetSize(90, 20)
-    groupHistoryButton:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 8, -8)
-    groupHistoryButton:SetNormalFontObject("GameFontNormalSmall")
-    groupHistoryButton:SetScript("OnClick", function()
-        TrialChatGroups:LoadHistory(selectedTab)
-    end)
-    groupHistoryButton:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Ask an online member for the messages you're missing,"
-            .. " up to the last " .. TrialChatGroups.MAX_HISTORY .. ".",
-            nil, nil, nil, nil, true)
-        GameTooltip:Show()
-    end)
-    groupHistoryButton:SetScript("OnLeave", GameTooltip_Hide)
-    groupHistoryButton:Hide()
-
-    local resizeGrip = CreateFrame("Button", nil, chatWindow)
-    resizeGrip:SetSize(16, 16)
-    resizeGrip:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -5, 5)
-    resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-    resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-    resizeGrip:SetScript("OnMouseDown", function(self)
-        self:GetParent():StartSizing("BOTTOMRIGHT")
-    end)
-    resizeGrip:SetScript("OnMouseUp", function(self)
-        local frame = self:GetParent()
-        frame:StopMovingOrSizing()
-        saveChatWindowSettings()
-    end)
-
-    chatLog = CreateFrame("ScrollingMessageFrame", nil, chatWindow)
-    chatLog:SetFontObject(ChatFontNormal)
-    chatLog:SetMaxLines(math.max(MAX_CHAT_HISTORY, TrialChatGroups.MAX_HISTORY) + 1)
-    chatLog:SetFading(false)
-    chatLog:SetJustifyH("LEFT")
-    chatLog:SetHyperlinksEnabled(true)
-    chatLog:EnableMouse(true)
-    chatLog:SetScript("OnHyperlinkClick", function(_, link, text, button)
-        if link == "tcolder" then
-            visibleCount = visibleCount + VISIBLE_HISTORY
-            if selectedTab == NEARBY_TAB then
-                renderNearbyLog(true)
-            else
-                renderGroupLog(selectedTab, true)
-            end
-            return
-        end
-        TrialChatCommon.HandleHyperlinkClick(link, text, button)
-    end)
-    chatLog:SetScript("OnHyperlinkEnter", function(self, link, text)
-        GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT")
-        if link == "tcolder" then
-            GameTooltip:SetText("Show " .. VISIBLE_HISTORY .. " older messages")
-        elseif string.sub(link or "", 1, 6) == "tcurl:" then
-            GameTooltip:SetText("Click to copy URL")
-        elseif string.sub(link or "", 1, 7) == "player:"
-            or string.sub(link or "", 1, 9) == "tcplayer:" then
-            GameTooltip:SetText("Click for player options: " .. (text or "player"))
-        else
-            GameTooltip:SetHyperlink(link)
-        end
-        GameTooltip:Show()
-    end)
-    chatLog:SetScript("OnHyperlinkLeave", function()
-        GameTooltip_Hide()
-    end)
-    TrialChatCommon.SetUpChatLog(chatLog)
-    renderNearbyLog()
-
-    chatInput = CreateFrame("EditBox", nil, chatWindow, "InputBoxTemplate")
-    chatInput:SetAutoFocus(false)
-    chatInput:SetMaxLetters(MAX_CHAT_MESSAGE_BYTES)
-    TrialChatCommon.RegisterLinkInput(chatInput)
-    chatInput:HookScript("OnEditFocusGained", updateChatWindowAlpha)
-    chatInput:HookScript("OnEditFocusLost", updateChatWindowAlpha)
-    chatInput:SetScript("OnEnterPressed", function(self)
-        local message = self:GetText()
-        self:SetText("")
-        if strtrim(message or "") ~= "" then
-            if selectedTab == NEARBY_TAB then
-                sendTrialChatMessage(message)
-            else
-                TrialChatGroups:SendMessage(selectedTab, message)
-            end
-        end
-        self:SetFocus()
-    end)
-    chatInput:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-    end)
-
-    updateChatContentLayout()
-    chatWindow:Hide()
-    updateRecipientList(true)
-    if TrialChatGroups then
-        TrialChatGroups:SetChangeHandler(onGroupsChanged)
-    end
-    layoutTabs()
-end
-
-openChatWindow = function(focusInput)
-    createChatWindow()
-    updateRecipientList(true)
-    chatWindow:Show()
-    if focusInput then
-        chatInput:SetFocus()
-    end
-    updateChatWindowAlpha()
-end
-
-showTrialChatNotice = function(message)
-    openChatWindow(false)
-    if selectedTab ~= NEARBY_TAB then
-        selectTab(NEARBY_TAB)
-    end
-    chatLog:AddMessage(message)
-    chatLog:ScrollToBottom()
+    GameTooltip:AddLine("Right-click for group chats.", 0.7, 0.7, 0.7)
+    GameTooltip:AddLine("Drag to move this button.", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
 end
 
 local function hookSlashOpenShortcut()
@@ -1127,30 +295,12 @@ local function hookSlashOpenShortcut()
                     or string.match(text, "^/trialchat%s+$") then
                     self:SetText("")
                     self:ClearFocus()
-                    openChatWindow(true)
+                    TrialChatMessenger:Open(true)
                 end
             end)
             slashOpenHooks[editBox] = true
         end
     end
-end
-
-local function showMinimapTooltip(button)
-    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
-    GameTooltip:ClearLines()
-    GameTooltip:AddLine("TrialChat")
-    GameTooltip:AddLine(
-        chatWindow and chatWindow:IsShown() and "Click to hide TrialChat."
-            or "Click to show TrialChat.",
-        1, 1, 1)
-    local unread = TrialChatGroups and TrialChatGroups:GetTotalUnreadCount() or 0
-    if unread > 0 then
-        GameTooltip:AddLine(unread .. " unread group message"
-            .. (unread == 1 and "" or "s") .. ".", 1, 0.49, 0.04)
-    end
-    GameTooltip:AddLine("Right-click for group chats.", 0.7, 0.7, 0.7)
-    GameTooltip:AddLine("Drag to move this button.", 0.7, 0.7, 0.7)
-    GameTooltip:Show()
 end
 
 local function updateMinimapButtonPosition()
@@ -1191,11 +341,7 @@ local function createMinimapButton()
             return
         end
 
-        if chatWindow:IsShown() then
-            chatWindow:Hide()
-        else
-            openChatWindow(true)
-        end
+        TrialChatMessenger:Toggle()
         if GameTooltip:GetOwner() == minimapButton then
             showMinimapTooltip(minimapButton)
         end
@@ -1238,15 +384,14 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
 
     local now = GetTime()
     if string.sub(message, 1, #CLASS_TAG) == CLASS_TAG then
-        rememberClass(sender, string.sub(message, #CLASS_TAG + 1))
-        updateRecipientList(true)
+        rememberClass(sender, string.sub(message, #CLASS_TAG + 1), true)
+        notifyListenersChanged()
         return
     end
 
     if message == PING and channel == "WHISPER" then
         C_ChatInfo.SendAddonMessage(PREFIX, PONG, "WHISPER", sender)
         noteActiveListener(sender)
-        updateRecipientList()
         return
     end
 
@@ -1257,7 +402,6 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
             noteActiveListener(sender)
         end
         pendingPings[senderKey] = nil
-        updateRecipientList()
         return
     end
 
@@ -1277,35 +421,20 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
         string.sub(message, #messageTag + 1))
     chatText = TrialChatCommon.NormalizeMessageMarkup(chatText)
     chatText = TrialChatCommon.AddSongLinkOwner(chatText, sender)
-    local shortSender = string.match(sender, "^([^-]+)") or sender
     noteActiveListener(sender)
-    updateRecipientList()
+    -- Keep the class of people you chat with, for their name color later.
+    TrialChatCommon.RememberClass(sender, getKnownClass(sender), true)
 
-    if isEmote then
-        if channel == "RAID" then
-            printIncomingMessage("Raid", shortSender, chatText, "|cffff7d0a",
-                "|cffff7d0a", sender, true)
-        elseif channel == "PARTY" then
-            printIncomingMessage("Party", shortSender, chatText, "|cffff7d0a",
-                "|cffff7d0a", sender, true)
-        elseif channel == "WHISPER" then
-            printIncomingMessage("Nearby", shortSender, chatText, "|cffff7d0a",
-                "|cffff7d0a", sender, true)
-        end
-        return
+    if not isEmote then
+        TrialChatBubbles.ShowMessage(sender, chatText)
     end
 
-    TrialChatBubbles.ShowMessage(sender, chatText)
-
     if channel == "RAID" then
-        printIncomingMessage("Raid", shortSender, chatText, "|cffff7d0a",
-            getKnownNameColor(sender, "|cffff7d0a"), sender)
+        printIncomingMessage("Raid", sender, chatText, isEmote)
     elseif channel == "PARTY" then
-        printIncomingMessage("Party", shortSender, chatText, "|cffff7d0a",
-            getKnownNameColor(sender, "|cffff7d0a"), sender)
+        printIncomingMessage("Party", sender, chatText, isEmote)
     elseif channel == "WHISPER" then
-        printIncomingMessage("Nearby", shortSender, chatText, "|cffffcc00",
-            getKnownNameColor(sender, "|cffffcc00"), sender)
+        printIncomingMessage("Nearby", sender, chatText, isEmote)
     end
 end)
 
@@ -1356,21 +485,20 @@ C_Timer.NewTicker(2, function()
         end
     end
     if listenersChanged then
-        markRecipientListDirty()
-        updateRecipientList()
+        notifyListenersChanged()
     end
 end)
 
 sendTrialChatMessage = function(msg)
     msg = strtrim(msg or "")
     if msg == "" then
-        showTrialChatNotice("|cffff3333[TrialChat] Enter a message to send with /tc.|r")
+        showTrialChatNotice("Enter a message to send with /tc.", true)
         return
     end
 
     if #msg > MAX_CHAT_MESSAGE_BYTES then
-        showTrialChatNotice("|cffff3333[TrialChat] Message is too long (maximum "
-            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).|r")
+        showTrialChatNotice("Message is too long (maximum "
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
         return
     end
 
@@ -1379,12 +507,12 @@ sendTrialChatMessage = function(msg)
     local emoteTarget
     msg, isEmote, emoteToken, emoteTarget = TrialChatCommon.ParseEmote(msg)
     if not msg then
-        showTrialChatNotice("|cffff3333[TrialChat] Enter the text for your emote.|r")
+        showTrialChatNotice("Enter the text for your emote.", true)
         return
     end
     if #msg > MAX_CHAT_MESSAGE_BYTES then
-        showTrialChatNotice("|cffff3333[TrialChat] Message is too long (maximum "
-            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).|r")
+        showTrialChatNotice("Message is too long (maximum "
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
         return
     end
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
@@ -1464,24 +592,163 @@ sendTrialChatMessage = function(msg)
         end
     end
 
-    local myShortName = string.match(playerName, "^([^-]+)") or playerName
-    local myNameColor = getClassColor(playerClass)
-    local messageColor = isEmote and "|cffff7d0a"
-        or sentToGroup and "|cffff7d0a" or "|cffffcc00"
-    if chatWindow and selectedTab ~= NEARBY_TAB then
-        selectTab(NEARBY_TAB)
-    end
-    printMessage(myShortName, msg, messageColor, myNameColor, isEmote)
-    if chatLog then
-        chatLog:ScrollToBottom()
-    end
+    addNearbyMessage(fullPlayerName or playerName, msg, isEmote)
     if not isEmote then
         TrialChatBubbles.ShowOwnMessage(msg)
     end
     if not sentToGroup and sentWhisperCount == 0 then
         showTrialChatNotice(
-            "|cffff7d0aBut nobody heard that, because there are no players using TrialChat around.|r")
+            "But nobody heard that, because there are no players using TrialChat around.")
     end
+end
+
+Nearby.MAX_MESSAGE_BYTES = MAX_CHAT_MESSAGE_BYTES
+
+-- The handler is called as handler(kind, ...) where kind is "message"
+-- (followed by the new history entry), "listeners" (someone started or
+-- stopped listening, or a listener was saved or removed), or "notice"
+-- (followed by the text and whether it is an error).
+function Nearby:SetChangeHandler(handler)
+    changeHandler = handler
+end
+
+function Nearby:GetHistory()
+    return getChatHistory()
+end
+
+function Nearby:Send(message)
+    sendTrialChatMessage(message)
+end
+
+function Nearby:GetClass(name)
+    return getKnownClass(name)
+end
+
+local function countsAsListener(name)
+    return name and not isSelf(name)
+end
+
+function Nearby:GetActiveCount()
+    local names = {}
+    local count = 0
+    for name in pairs(activeListeners) do
+        local key = normalizeName(name)
+        if countsAsListener(name) and not names[key] then
+            names[key] = true
+            count = count + 1
+        end
+    end
+    return count
+end
+
+function Nearby:IsActive(name)
+    local nameKey = normalizeCharacterName(name)
+    for listener in pairs(activeListeners) do
+        if normalizeCharacterName(listener) == nameKey then
+            return true
+        end
+    end
+    return false
+end
+
+local function sortListeners(listeners)
+    table.sort(listeners, function(left, right)
+        return strlower(left.fullName) < strlower(right.fullName)
+    end)
+end
+
+-- The players around you that use TrialChat, and the saved listeners that
+-- aren't around, each a list of { fullName, classFile, saved }.
+function Nearby:GetListeners()
+    getGroupMembers()
+    local nearby, away = {}, {}
+    local activeByName, activeByShortName = {}, {}
+    for targetPlayer in pairs(activeListeners) do
+        if countsAsListener(targetPlayer) then
+            local key = normalizeName(targetPlayer)
+            if not activeByName[key] then
+                local listener = {
+                    fullName = targetPlayer,
+                    classFile = getKnownClass(targetPlayer),
+                }
+                activeByName[key] = listener
+                activeByShortName[normalizeName(getShortName(targetPlayer))] = listener
+                nearby[#nearby + 1] = listener
+            end
+        end
+    end
+
+    for targetKey, targetPlayer in pairs(getPermanentListeners()) do
+        if countsAsListener(targetPlayer) then
+            local listener = activeByName[normalizeName(targetKey)]
+            if not listener and not string.find(targetPlayer, "-", 1, true) then
+                listener = activeByShortName[normalizeName(getShortName(targetPlayer))]
+            end
+            if listener then
+                listener.saved = true
+            else
+                away[#away + 1] = {
+                    fullName = targetPlayer,
+                    classFile = getKnownClass(targetPlayer),
+                    saved = true,
+                }
+            end
+        end
+    end
+    sortListeners(nearby)
+    sortListeners(away)
+    return nearby, away
+end
+
+function Nearby:GetSavedCount()
+    local count = 0
+    for _, targetPlayer in pairs(getPermanentListeners()) do
+        if countsAsListener(targetPlayer) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Saved listeners hear your nearby chat wherever they are.
+function Nearby:ToggleSavedListener(name)
+    if not name or isSelf(name) then return end
+
+    local permanentListeners = getPermanentListeners()
+    local existingKey = findPermanentListenerKey(name)
+    if existingKey then
+        permanentListeners[existingKey] = nil
+    else
+        permanentListeners[normalizeName(name)] = name
+    end
+    notifyChange("listeners")
+end
+
+function Nearby:IsSavedListener(name)
+    return findPermanentListenerKey(name) ~= nil
+end
+
+-- Returns an error message when the name can't be added.
+function Nearby:AddSavedListener(name)
+    name = strtrim(name or "")
+    if name == "" then return nil end
+
+    if isSelf(name) then
+        return "You are already in the listener list."
+    end
+    if string.find(name, "[%c%s|]") then
+        return "Enter a character name, optionally followed by -Realm."
+    end
+
+    local key = normalizeName(name)
+    local permanentListeners = getPermanentListeners()
+    if permanentListeners[key] then
+        return "That listener is already saved."
+    end
+
+    permanentListeners[key] = name
+    notifyChange("listeners")
+    return nil
 end
 
 SLASH_TRIALCHAT1 = "/tc"
@@ -1489,7 +756,7 @@ SLASH_TRIALCHAT2 = "/trialchat"
 SlashCmdList["TRIALCHAT"] = function(msg)
     msg = strtrim(msg or "")
     if msg == "" then
-        openChatWindow(true)
+        TrialChatMessenger:Open(true)
         return
     end
 
@@ -1500,25 +767,18 @@ BINDING_NAME_TRIALCHAT_OPEN = "Open and start typing"
 
 function TrialChat_Open()
     C_Timer.After(0, function()
-        openChatWindow(true)
+        TrialChatMessenger:Open(true)
     end)
 end
 
 local hookFrame = CreateFrame("Frame")
 hookFrame:RegisterEvent("PLAYER_LOGIN")
-hookFrame:RegisterEvent("PLAYER_LOGOUT")
-hookFrame:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_LOGOUT" then
-        saveChatWindowSettings()
-        return
-    end
-
+hookFrame:SetScript("OnEvent", function()
     TrialChatCommon.RefreshPlayerIdentity()
     playerName = TrialChatCommon.GetPlayerName()
     fullPlayerName = TrialChatCommon.GetPlayerFullName()
     playerRealm = TrialChatCommon.GetPlayerRealm()
     playerClass = TrialChatCommon.GetPlayerClass()
-    createChatWindow()
     createMinimapButton()
     hookSlashOpenShortcut()
 end)

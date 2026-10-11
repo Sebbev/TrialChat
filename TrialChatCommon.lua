@@ -115,6 +115,47 @@ end
 
 TrialChatCommon.RefreshPlayerIdentity()
 
+-- Classes of other TrialChat users, so names and avatars keep their class
+-- color. Classes learned from nameplates are only kept for this session;
+-- ones of people you chat with are saved.
+local MAX_SAVED_CLASSES = 2000
+local knownClasses = {}
+
+local function getSavedClasses()
+    TrialChatDB = TrialChatDB or {}
+    if type(TrialChatDB.classes) ~= "table" then
+        TrialChatDB.classes = {}
+        TrialChatDB.classCount = 0
+    end
+    return TrialChatDB.classes
+end
+
+function TrialChatCommon.RememberClass(name, classFile, keep)
+    if not name or name == "" or not classFile or not RAID_CLASS_COLORS[classFile] then
+        return
+    end
+    local key = TrialChatCommon.NormalizeCharacterName(name)
+    knownClasses[key] = classFile
+    if not keep then return end
+
+    local savedClasses = getSavedClasses()
+    if savedClasses[key] == nil then
+        if (TrialChatDB.classCount or 0) >= MAX_SAVED_CLASSES then return end
+        TrialChatDB.classCount = (TrialChatDB.classCount or 0) + 1
+    end
+    savedClasses[key] = classFile
+end
+
+function TrialChatCommon.GetKnownClass(name)
+    if not name or name == "" then return nil end
+    if TrialChatCommon.IsSelf(name) then return playerClass end
+
+    local key = TrialChatCommon.NormalizeCharacterName(name)
+    local savedClasses = TrialChatDB and type(TrialChatDB.classes) == "table"
+        and TrialChatDB.classes
+    return knownClasses[key] or (savedClasses and savedClasses[key])
+end
+
 function TrialChatCommon.RegisterLinkInput(input)
     linkInputs[input] = true
 

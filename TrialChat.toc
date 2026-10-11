@@ -12,3 +12,6 @@ TrialChatEmotesTargeted.lua
 TrialChatBubbles.lua
 TrialChat.lua
 TrialChatGroups.lua
+TrialChatUI.lua
+TrialChatMessages.lua
+TrialChatWindow.lua
