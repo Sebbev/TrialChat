@@ -6,12 +6,17 @@ TrialChatMinimalView = {}
 local UI = TrialChatUI
 local Color = UI.Color
 
-local WIDTH = 520
-local MAX_LINES = 8
+-- The size you can drag it to: the width of the messages, and the height
+-- of the space they get above the conversations.
+local DEFAULT_WIDTH = 520
+local MIN_WIDTH, MAX_WIDTH = 320, 1000
+local DEFAULT_AREA_HEIGHT = 200
+local MIN_AREA_HEIGHT, MAX_AREA_HEIGHT = 60, 600
+-- Messages kept to show; as many as fit are on screen.
+local MAX_LINES = 50
 local LINE_GAP = 4
 local LINE_PADDING_X = 8
 local LINE_PADDING_Y = 4
-local LINE_TEXT_WIDTH = WIDTH - 2 * LINE_PADDING_X
 local LINE_VISIBLE_SECONDS = 30
 local LINE_FADE_SECONDS = 4
 -- While you aren't using the view, older lines are dimmer (newest first).
@@ -35,6 +40,10 @@ local DEFAULT_X, DEFAULT_Y = 40, 300
 local View = {}
 View.__index = View
 
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
+end
+
 -- The keybinding to reply with, when there is one.
 local function getReplyHint()
     local key = GetBindingKey and GetBindingKey("TRIALCHAT_OPEN")
@@ -55,9 +64,15 @@ function TrialChatMinimalView.Create(controller)
         controller = controller, lines = {}, chips = {}, pills = {},
     }, View)
 
+    local settings = controller.GetSettings()
+    view.width = clamp(tonumber(settings.minimalWidth) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
+    view.areaHeight = clamp(tonumber(settings.minimalHeight) or DEFAULT_AREA_HEIGHT,
+        MIN_AREA_HEIGHT, MAX_AREA_HEIGHT)
+
     local frame = CreateFrame("Frame", "TrialChatMinimalFrame", UIParent)
     view.frame = frame
-    frame:SetWidth(WIDTH + 2 * PADDING)
+    frame:SetWidth(view.width + 2 * PADDING)
+    frame:SetResizable(true)
     view.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + ROW_GAP + PILL_HEIGHT
     frame:SetHeight(view.chromeHeight)
     frame:SetFrameStrata("MEDIUM")
@@ -88,6 +103,7 @@ function TrialChatMinimalView.Create(controller)
     })
     view.grip:SetPoint("BOTTOMLEFT", view.composer, "TOPLEFT", 0, ROW_GAP)
     view:DragBy(view.grip)
+    view:CreateResizer()
     view:CreateToast()
 
     local sinceUpdate = 0
@@ -96,6 +112,11 @@ function TrialChatMinimalView.Create(controller)
         if sinceUpdate >= UPDATE_SECONDS then
             sinceUpdate = 0
             view:UpdateFade()
+        end
+    end)
+    frame:SetScript("OnSizeChanged", function(_, width, height)
+        if view.resizing then
+            view:ApplySize(width, height)
         end
     end)
     frame:SetScript("OnShow", function()
@@ -126,6 +147,65 @@ function View:DragBy(region)
         -- Keep it pinned by its bottom, so it grows upward with the messages.
         self:RestorePosition()
     end)
+end
+
+-- A grip in the top corner resizes it; the bottom stays where it is.
+function View:CreateResizer()
+    local resizer = CreateFrame("Button", nil, self.chrome)
+    self.resizer = resizer
+    resizer:SetSize(16, 16)
+    resizer:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -3, -3)
+    resizer:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    resizer:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    resizer:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    -- The game's grabber points down and right; this one points up and right.
+    for _, texture in ipairs({
+        resizer:GetNormalTexture(), resizer:GetHighlightTexture(), resizer:GetPushedTexture(),
+    }) do
+        texture:SetTexCoord(0, 1, 1, 0)
+    end
+    resizer:SetScript("OnMouseDown", function() self:StartResizing() end)
+    resizer:SetScript("OnMouseUp", function() self:StopResizing() end)
+    resizer:SetScript("OnEnter", function(button)
+        GameTooltip:SetOwner(button, "ANCHOR_TOP")
+        GameTooltip:SetText("Drag to resize")
+        GameTooltip:Show()
+    end)
+    resizer:SetScript("OnLeave", GameTooltip_Hide)
+end
+
+function View:GetLinesBottom()
+    return self.chromeHeight - PADDING + ROW_GAP
+end
+
+function View:StartResizing()
+    self:UpdateHeight(true)
+    self.resizing = true
+    local bottom = self:GetLinesBottom() + PADDING
+    self.frame:SetResizeBounds(MIN_WIDTH + 2 * PADDING, bottom + MIN_AREA_HEIGHT,
+        MAX_WIDTH + 2 * PADDING, bottom + MAX_AREA_HEIGHT)
+    self.frame:StartSizing("TOPRIGHT")
+end
+
+function View:StopResizing()
+    if not self.resizing then return end
+    self.frame:StopMovingOrSizing()
+    self:ApplySize(self.frame:GetWidth(), self.frame:GetHeight())
+    self.resizing = false
+    local settings = self.controller.GetSettings()
+    settings.minimalWidth = self.width
+    settings.minimalHeight = self.areaHeight
+    self:SavePosition()
+    self:RestorePosition()
+    self:UpdateFade()
+end
+
+-- Lays everything out for the frame's new size while it's being resized.
+function View:ApplySize(frameWidth, frameHeight)
+    self.width = clamp(math.floor(frameWidth - 2 * PADDING + 0.5), MIN_WIDTH, MAX_WIDTH)
+    self.areaHeight = clamp(math.floor(frameHeight - self:GetLinesBottom() - PADDING + 0.5),
+        MIN_AREA_HEIGHT, MAX_AREA_HEIGHT)
+    self:UpdateConversations()
 end
 
 function View:CreateComposer()
@@ -210,7 +290,7 @@ function View:UpdateConversations()
     local selected = self.controller.GetSelected()
     local left = GRIP_WIDTH + 4
     local x, row = left, 0
-    local rowWidth = WIDTH - self.fullButton:GetWidth() - PILL_GAP
+    local rowWidth = self.width - self.fullButton:GetWidth() - PILL_GAP
     local count = 0
     for index, conversation in ipairs(self.controller.GetConversations()) do
         count = index
@@ -224,7 +304,7 @@ function View:UpdateConversations()
         UI.SetButtonStyle(pill, conversation.key == selected and "accent" or "hud")
         local width = pill:GetWidth()
         if x > left and x + width > rowWidth then
-            x, row, rowWidth = left, row + 1, WIDTH
+            x, row, rowWidth = left, row + 1, self.width
         end
         pill:ClearAllPoints()
         pill:SetPoint("BOTTOMLEFT", self.composer, "TOPLEFT", x,
@@ -240,9 +320,14 @@ function View:UpdateConversations()
     self:LayoutLines()
 end
 
--- The panel reaches up to the highest message on screen.
-function View:UpdateHeight()
+-- While you use it, the panel is the full size you gave it; otherwise it
+-- reaches up to the highest message still on screen.
+function View:UpdateHeight(active)
+    if self.resizing then return end
     local top = self.chromeHeight
+    if active then
+        top = self:GetLinesBottom() + self.areaHeight + PADDING
+    end
     for _, chip in ipairs(self.chips) do
         if chip:IsShown() and chip.top and chip.top + PADDING > top then
             top = chip.top + PADDING
@@ -290,27 +375,33 @@ function View:CreateChip()
     return chip
 end
 
--- The lines stack up from the conversations, the newest at the bottom; each
--- background is as wide as its text.
+-- The lines stack up from the conversations, the newest at the bottom, as
+-- many as fit; each background is as wide as its text.
 function View:LayoutLines()
-    local y = self.chromeHeight - PADDING + ROW_GAP
+    local bottom = self:GetLinesBottom()
+    local limit = bottom + self.areaHeight
+    local textWidth = self.width - 2 * LINE_PADDING_X
+    local y = bottom
     local count = #self.lines
+    local shown = 0
     for rank = 1, count do
         local line = self.lines[count - rank + 1]
         local chip = self.chips[rank] or self:CreateChip()
-        chip.line = line
         chip.text:SetText(line.text)
         UI.SetTextColor(chip.text, line.color)
-        local width = math.min(math.ceil(chip.text:GetUnboundedStringWidth()) + 1, LINE_TEXT_WIDTH)
+        local width = math.min(math.ceil(chip.text:GetUnboundedStringWidth()) + 1, textWidth)
         chip.text:SetWidth(width)
-        chip:SetSize(width + 2 * LINE_PADDING_X,
-            math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y)
+        local height = math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y
+        if y + height > limit then break end
+        chip.line = line
+        chip:SetSize(width + 2 * LINE_PADDING_X, height)
         chip:ClearAllPoints()
         chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
-        chip.top = y + chip:GetHeight()
+        chip.top = y + height
         y = chip.top + LINE_GAP
+        shown = rank
     end
-    for rank = count + 1, #self.chips do
+    for rank = shown + 1, #self.chips do
         self.chips[rank].line = nil
         self.chips[rank]:Hide()
     end
@@ -366,7 +457,7 @@ end
 -- Fading
 ---------------------------------------------------------------------------
 function View:IsActive()
-    if self.input:HasFocus() or self.frame:IsMouseOver() then return true end
+    if self.resizing or self.input:HasFocus() or self.frame:IsMouseOver() then return true end
     for _, chip in ipairs(self.chips) do
         if chip:IsShown() and chip:IsMouseOver() then return true end
     end
@@ -380,6 +471,7 @@ function View:UpdateFade()
     local active = self:IsActive()
     local recent = self.lastLineAt and now - self.lastLineAt < RECENT_SECONDS
     TrialChatCommon.FadeTo(self.chrome, (active or recent) and 1 or IDLE_ALPHA)
+    self.resizer:SetShown(active)
     for rank, chip in ipairs(self.chips) do
         local line = chip.line
         local alpha = 0
@@ -392,7 +484,7 @@ function View:UpdateFade()
         chip:SetAlpha(alpha)
         chip:SetShown(alpha > 0)
     end
-    self:UpdateHeight()
+    self:UpdateHeight(active)
 end
 
 ---------------------------------------------------------------------------
