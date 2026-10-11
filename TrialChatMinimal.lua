@@ -20,9 +20,13 @@ local LOAD_LINES = 50
 -- you've stopped using it.
 local SCROLL_LINES = 2
 local SCROLL_RESET_SECONDS = 10
+-- Messages are pills like the conversations: as tall as them for one line,
+-- with the same rounded ends, and rounded boxes when they wrap.
 local LINE_GAP = 4
-local LINE_PADDING_X = 8
-local LINE_PADDING_Y = 4
+local LINE_PADDING_X = 12
+local LINE_PADDING_Y = 6
+local LINE_MIN_HEIGHT = 26
+local LINE_RADIUS = 13
 local LINE_VISIBLE_SECONDS = 30
 local LINE_FADE_SECONDS = 4
 -- While you aren't using the view, older lines are dimmer (newest first).
@@ -379,8 +383,9 @@ end
 
 function View:CreateChip()
     local chip = CreateFrame("Frame", nil, self.frame)
-    chip.box = UI.CreateBox(chip, { radius = 4 })
-    chip.box:SetColor(Color.black, 0.55)
+    chip.box = UI.CreateBox(chip, { radius = LINE_RADIUS, border = true })
+    chip.box:SetColor(Color.sidebar, 0.85)
+    chip.box:SetBorderColor(Color.white, 0.12)
     chip.text = UI.CreateText(chip, UI.Font.body)
     chip.text:SetPoint("TOPLEFT", chip, "TOPLEFT", LINE_PADDING_X, -LINE_PADDING_Y)
     chip.text:SetJustifyH("LEFT")
@@ -413,13 +418,14 @@ function View:LayoutLines()
         UI.SetTextColor(chip.text, line.color)
         local width = math.min(math.ceil(chip.text:GetUnboundedStringWidth()) + 1, textWidth)
         chip.text:SetWidth(width)
-        local height = math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y
+        local height = math.max(LINE_MIN_HEIGHT,
+            math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y)
         if y + height > limit then
             self.showsOldest = false
             break
         end
         chip.line = line
-        chip:SetSize(width + 2 * LINE_PADDING_X, height)
+        chip:SetSize(math.max(height, width + 2 * LINE_PADDING_X), height)
         chip:ClearAllPoints()
         chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
         chip.top = y + height
