@@ -12,11 +12,21 @@ local DEFAULT_WIDTH = 520
 local MIN_WIDTH, MAX_WIDTH = 320, 1000
 local DEFAULT_AREA_HEIGHT = 200
 local MIN_AREA_HEIGHT, MAX_AREA_HEIGHT = 60, 600
--- Messages kept to show; as many as fit are on screen.
+-- Messages kept to show; as many as fit are on screen. Scrolling back loads
+-- older ones from the conversation's history, this many at a time.
 local MAX_LINES = 50
+local LOAD_LINES = 50
+-- Lines per mouse wheel notch, and how long it stays scrolled back once
+-- you've stopped using it.
+local SCROLL_LINES = 2
+local SCROLL_RESET_SECONDS = 10
+-- Messages are pills like the conversations: as tall as them for one line,
+-- with the same rounded ends, and rounded boxes when they wrap.
 local LINE_GAP = 4
-local LINE_PADDING_X = 8
-local LINE_PADDING_Y = 4
+local LINE_PADDING_X = 12
+local LINE_PADDING_Y = 6
+local LINE_MIN_HEIGHT = 26
+local LINE_RADIUS = 13
 local LINE_VISIBLE_SECONDS = 30
 local LINE_FADE_SECONDS = 4
 -- While you aren't using the view, older lines are dimmer (newest first).
@@ -62,6 +72,7 @@ end
 function TrialChatMinimalView.Create(controller)
     local view = setmetatable({
         controller = controller, lines = {}, chips = {}, pills = {},
+        scroll = 0, newCount = 0,
     }, View)
 
     local settings = controller.GetSettings()
@@ -104,6 +115,13 @@ function TrialChatMinimalView.Create(controller)
     view.grip:SetPoint("BOTTOMLEFT", view.composer, "TOPLEFT", 0, ROW_GAP)
     view:DragBy(view.grip)
     view:CreateResizer()
+    view.newestButton = UI.CreateButton(frame, {
+        style = "hud", icon = "arrowDown", iconSize = 12, text = "Newest",
+        height = PILL_HEIGHT, radius = 13, font = UI.Font.small,
+        onClick = function() view:ScrollToNewest() end,
+    })
+    view.newestButton:SetFrameLevel(view.chrome:GetFrameLevel() + 10)
+    view.newestButton:Hide()
     view:CreateToast()
 
     local sinceUpdate = 0
@@ -113,6 +131,10 @@ function TrialChatMinimalView.Create(controller)
             sinceUpdate = 0
             view:UpdateFade()
         end
+    end)
+    frame:EnableMouseWheel(true)
+    frame:SetScript("OnMouseWheel", function(_, delta)
+        view:Scroll(delta * SCROLL_LINES)
     end)
     frame:SetScript("OnSizeChanged", function(_, width, height)
         if view.resizing then
@@ -344,15 +366,16 @@ end
 ---------------------------------------------------------------------------
 function View:MakeLine(entry, format, colorFor)
     if type(entry) == "string" then
-        return { text = TrialChatCommon.RemovePlayerLinks(entry), color = Color.text }
+        return { entry = entry, text = TrialChatCommon.RemovePlayerLinks(entry), color = Color.text }
     end
     if type(entry) ~= "table" then return nil end
 
     local name = TrialChatCommon.ShortName(entry.sender or "?")
     if entry.isEmote then
-        return { text = name .. " " .. format(entry), color = Color.emote }
+        return { entry = entry, text = name .. " " .. format(entry), color = Color.emote }
     end
     return {
+        entry = entry,
         text = UI.ColorText(colorFor(entry), name) .. ": " .. format(entry),
         color = Color.text,
     }
@@ -360,8 +383,9 @@ end
 
 function View:CreateChip()
     local chip = CreateFrame("Frame", nil, self.frame)
-    chip.box = UI.CreateBox(chip, { radius = 4 })
-    chip.box:SetColor(Color.black, 0.55)
+    chip.box = UI.CreateBox(chip, { radius = LINE_RADIUS, border = true })
+    chip.box:SetColor(Color.sidebar, 0.85)
+    chip.box:SetBorderColor(Color.white, 0.12)
     chip.text = UI.CreateText(chip, UI.Font.body)
     chip.text:SetPoint("TOPLEFT", chip, "TOPLEFT", LINE_PADDING_X, -LINE_PADDING_Y)
     chip.text:SetJustifyH("LEFT")
@@ -375,26 +399,33 @@ function View:CreateChip()
     return chip
 end
 
--- The lines stack up from the conversations, the newest at the bottom, as
--- many as fit; each background is as wide as its text.
+-- The lines stack up from the conversations, the newest at the bottom (or
+-- the one scrolled back to), as many as fit; each background is as wide as
+-- its text.
 function View:LayoutLines()
     local bottom = self:GetLinesBottom()
     local limit = bottom + self.areaHeight
     local textWidth = self.width - 2 * LINE_PADDING_X
     local y = bottom
     local count = #self.lines
+    self.scroll = clamp(self.scroll, 0, math.max(0, count - 1))
     local shown = 0
-    for rank = 1, count do
-        local line = self.lines[count - rank + 1]
+    self.showsOldest = true
+    for rank = 1, count - self.scroll do
+        local line = self.lines[count - self.scroll - rank + 1]
         local chip = self.chips[rank] or self:CreateChip()
         chip.text:SetText(line.text)
         UI.SetTextColor(chip.text, line.color)
         local width = math.min(math.ceil(chip.text:GetUnboundedStringWidth()) + 1, textWidth)
         chip.text:SetWidth(width)
-        local height = math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y
-        if y + height > limit then break end
+        local height = math.max(LINE_MIN_HEIGHT,
+            math.ceil(chip.text:GetStringHeight()) + 2 * LINE_PADDING_Y)
+        if y + height > limit then
+            self.showsOldest = false
+            break
+        end
         chip.line = line
-        chip:SetSize(width + 2 * LINE_PADDING_X, height)
+        chip:SetSize(math.max(height, width + 2 * LINE_PADDING_X), height)
         chip:ClearAllPoints()
         chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
         chip.top = y + height
@@ -405,14 +436,102 @@ function View:LayoutLines()
         self.chips[rank].line = nil
         self.chips[rank]:Hide()
     end
+    self:UpdateNewestButton()
     self:UpdateFade()
 end
 
-function View:AddLine(line)
+-- While scrolled back, a button at the bottom goes back to the newest
+-- message, counting the ones that came in meanwhile.
+function View:UpdateNewestButton()
+    local button = self.newestButton
+    button:SetShown(self.scroll > 0)
+    if self.scroll == 0 then return end
+    button:SetLabel(self.newCount > 0 and (self.newCount .. " new") or "Newest")
+    UI.SetButtonStyle(button, self.newCount > 0 and "accent" or "hud")
+    button:ClearAllPoints()
+    button:SetPoint("BOTTOMRIGHT", self.frame, "BOTTOMRIGHT", -PADDING, self:GetLinesBottom())
+end
+
+-- Adds the conversation's older messages in front of the lines; false when
+-- there are none.
+function View:LoadOlder()
+    local entries, format, colorFor = self.controller.GetEntries()
+    local oldest
+    for _, line in ipairs(self.lines) do
+        if line.entry ~= nil then
+            oldest = line.entry
+            break
+        end
+    end
+    local first = #entries + 1
+    if oldest ~= nil then
+        first = nil
+        for index = #entries, 1, -1 do
+            if entries[index] == oldest then
+                first = index
+                break
+            end
+        end
+    end
+    if not first or first <= 1 then return false end
+
+    local now = GetTime()
+    local lines = {}
+    for index = math.max(1, first - LOAD_LINES), first - 1 do
+        local line = self:MakeLine(entries[index], format, colorFor)
+        if line then
+            line.shownAt = now
+            lines[#lines + 1] = line
+        end
+    end
+    if #lines == 0 then return false end
+    for _, line in ipairs(self.lines) do
+        lines[#lines + 1] = line
+    end
+    self.lines = lines
+    return true
+end
+
+-- Scrolls back into older messages (positive) or forward.
+function View:Scroll(lines)
+    self.lastInteractionAt = GetTime()
+    if lines > 0 then
+        for _ = 1, lines do
+            if self.showsOldest and not self:LoadOlder() then break end
+            self.scroll = self.scroll + 1
+            self:LayoutLines()
+        end
+        return
+    end
+    self.scroll = math.max(0, self.scroll + lines)
+    if self.scroll == 0 then
+        self.newCount = 0
+    end
+    self:LayoutLines()
+end
+
+function View:ScrollToNewest()
+    self.scroll = 0
+    self.newCount = 0
+    self:LayoutLines()
+end
+
+-- New lines don't move what you're reading while scrolled back, unless
+-- jumpToNewest (your own message, a notice).
+function View:AddLine(line, jumpToNewest)
     line.shownAt = GetTime()
     self.lines[#self.lines + 1] = line
-    while #self.lines > MAX_LINES do
-        table.remove(self.lines, 1)
+    if jumpToNewest then
+        self.scroll = 0
+        self.newCount = 0
+    elseif self.scroll > 0 then
+        self.scroll = self.scroll + 1
+        self.newCount = self.newCount + 1
+    end
+    if self.scroll == 0 then
+        while #self.lines > MAX_LINES do
+            table.remove(self.lines, 1)
+        end
     end
     self.lastLineAt = line.shownAt
     self:LayoutLines()
@@ -423,6 +542,8 @@ function View:Render()
     local entries, format, colorFor = self.controller.GetEntries()
     local now = GetTime()
     self.lines = {}
+    self.scroll = 0
+    self.newCount = 0
     for index = math.max(1, #entries - MAX_LINES + 1), #entries do
         local line = self:MakeLine(entries[index], format, colorFor)
         if line then
@@ -433,17 +554,17 @@ function View:Render()
     self:LayoutLines()
 end
 
-function View:AddEntry(entry)
+function View:AddEntry(entry, isOwn)
     local _, format, colorFor = self.controller.GetEntries()
     local line = self:MakeLine(entry, format, colorFor)
     if line then
-        self:AddLine(line)
+        self:AddLine(line, isOwn)
     end
 end
 
 -- A line from TrialChat itself; it isn't kept in the history.
 function View:AddNotice(text, color)
-    self:AddLine({ text = text, color = color or Color.muted })
+    self:AddLine({ text = text, color = color or Color.muted }, true)
 end
 
 function View:Refresh()
@@ -456,7 +577,7 @@ end
 ---------------------------------------------------------------------------
 -- Fading
 ---------------------------------------------------------------------------
-function View:IsActive()
+function View:IsInUse()
     if self.resizing or self.input:HasFocus() or self.frame:IsMouseOver() then return true end
     for _, chip in ipairs(self.chips) do
         if chip:IsShown() and chip:IsMouseOver() then return true end
@@ -464,11 +585,21 @@ function View:IsActive()
     return false
 end
 
--- While you hover or type, everything shows. Otherwise the rest fades back
--- and each message fades out a while after it came in, older ones dimmer.
+-- While you hover, type or read back, everything shows. Otherwise the rest
+-- fades back and each message fades out a while after it came in, older
+-- ones dimmer. Left scrolled back, it returns to the newest after a while.
 function View:UpdateFade()
     local now = GetTime()
-    local active = self:IsActive()
+    local inUse = self:IsInUse()
+    if inUse then
+        self.lastInteractionAt = now
+    end
+    if self.scroll > 0 and not inUse
+        and now - (self.lastInteractionAt or now) > SCROLL_RESET_SECONDS then
+        self:ScrollToNewest()
+        return
+    end
+    local active = inUse or self.scroll > 0
     local recent = self.lastLineAt and now - self.lastLineAt < RECENT_SECONDS
     TrialChatCommon.FadeTo(self.chrome, (active or recent) and 1 or IDLE_ALPHA)
     self.resizer:SetShown(active)
