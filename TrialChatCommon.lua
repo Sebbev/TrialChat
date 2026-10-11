@@ -412,3 +412,37 @@ function TrialChatCommon.PerformEmote(token, target)
     if not token then return end
     C_ChatInfo.PerformEmote(token, target)
 end
+
+local FADE_IN_PER_SECOND = 4
+local FADE_OUT_PER_SECOND = 1.5
+local fadingFrames = {}
+local fadeDriver = CreateFrame("Frame")
+fadeDriver:Hide()
+fadeDriver:SetScript("OnUpdate", function(self, elapsed)
+    for frame, targetAlpha in pairs(fadingFrames) do
+        local alpha = frame:GetAlpha()
+        if alpha < targetAlpha then
+            alpha = math.min(targetAlpha, alpha + elapsed * FADE_IN_PER_SECOND)
+        else
+            alpha = math.max(targetAlpha, alpha - elapsed * FADE_OUT_PER_SECOND)
+        end
+        frame:SetAlpha(alpha)
+        if alpha == targetAlpha then
+            fadingFrames[frame] = nil
+        end
+    end
+    if not next(fadingFrames) then
+        self:Hide()
+    end
+end)
+
+-- Fades a frame towards the given alpha instead of jumping to it: quickly
+-- when it becomes more visible, more gently when it fades back.
+function TrialChatCommon.FadeTo(frame, targetAlpha)
+    if frame:GetAlpha() == targetAlpha then
+        fadingFrames[frame] = nil
+        return
+    end
+    fadingFrames[frame] = targetAlpha
+    fadeDriver:Show()
+end

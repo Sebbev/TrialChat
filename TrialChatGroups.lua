@@ -8,6 +8,7 @@ local MAX_HISTORY_SYNC_MESSAGES = 50
 local HISTORY_CHUNK_BYTES = 170
 local MEMBER_TIMEOUT = 90
 local MEMBER_UPDATE_INTERVAL = 30
+local MESSAGE_VISIBLE_SECONDS = 7
 local Groups = {}
 TrialChatGroups = Groups
 
@@ -211,11 +212,11 @@ local function updateWindowAlpha(window)
             and window.memberPanel:IsMouseOver())
     local inputHasFocus = window.input and window.input:HasFocus()
     local recentMessage = window.lastMessageAt
-        and GetTime() - window.lastMessageAt < 10
+        and GetTime() - window.lastMessageAt < MESSAGE_VISIBLE_SECONDS
     local alpha = (mouseOver or inputHasFocus or recentMessage) and 1 or 0.45
-    window.frame:SetAlpha(alpha)
+    TrialChatCommon.FadeTo(window.frame, alpha)
     if window.memberPanel then
-        window.memberPanel:SetAlpha(alpha)
+        TrialChatCommon.FadeTo(window.memberPanel, alpha)
     end
 end
 
@@ -371,7 +372,7 @@ local function addGroupMessage(
         end
         session.window.lastMessageAt = GetTime()
         updateWindowAlpha(session.window)
-        C_Timer.After(10, function()
+        C_Timer.After(MESSAGE_VISIBLE_SECONDS, function()
             updateWindowAlpha(session.window)
         end)
     end
