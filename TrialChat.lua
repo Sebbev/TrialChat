@@ -52,7 +52,7 @@ local updateRecipientList
 local updateChatContentLayout
 local RECIPIENT_ROW_HEIGHT = 18
 local CHAT_WINDOW_IDLE_ALPHA = 0.45
-local CHAT_MESSAGE_VISIBLE_SECONDS = 10
+local CHAT_MESSAGE_VISIBLE_SECONDS = 7
 local lastChatMessageAt
 local NEARBY_TAB = "nearby"
 local TAB_TOP = -56
@@ -82,9 +82,9 @@ local function updateChatWindowAlpha()
     local alpha = (mouseOverChat or mouseOverListeners or inputHasFocus or recentMessage)
         and 1 or CHAT_WINDOW_IDLE_ALPHA
 
-    chatWindow:SetAlpha(alpha)
+    TrialChatCommon.FadeTo(chatWindow, alpha)
     if recipientPanel then
-        recipientPanel:SetAlpha(alpha)
+        TrialChatCommon.FadeTo(recipientPanel, alpha)
     end
 end
 
