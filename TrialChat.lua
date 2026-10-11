@@ -1101,6 +1101,9 @@ sendTrialChatMessage = function(msg)
     local messageColor = isEmote and "|cffff7d0a"
         or sentToGroup and "|cffff7d0a" or "|cffffcc00"
     printMessage(myShortName, msg, messageColor, myNameColor, isEmote)
+    if not isEmote then
+        TrialChatBubbles.ShowOwnMessage(msg)
+    end
     if not sentToGroup and sentWhisperCount == 0 then
         showTrialChatNotice(
             "|cffff7d0aBut nobody heard that, because there are no players using TrialChat around.|r")
