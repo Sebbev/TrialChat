@@ -218,7 +218,7 @@ end
 
 local function appendMessage(entry, isOwn)
     if inMinimalMode() then
-        minimal:AddEntry(entry)
+        minimal:AddEntry(entry, isOwn)
     else
         messageList:AppendEntry(entry, isOwn)
     end
