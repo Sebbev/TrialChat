@@ -784,6 +784,7 @@ local function createChatWindow()
         saveChatWindowSettings()
     end)
     chatWindow:HookScript("OnEnter", updateChatWindowAlpha)
+    TrialChatCommon.WatchHover(chatWindow, updateChatWindowAlpha)
     chatWindow:HookScript("OnLeave", updateChatWindowAlpha)
     chatWindow:SetBackdrop({
         bgFile = "Interface/Tooltips/UI-Tooltip-Background",

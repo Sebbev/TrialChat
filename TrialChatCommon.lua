@@ -436,6 +436,22 @@ fadeDriver:SetScript("OnUpdate", function(self, elapsed)
     end
 end)
 
+local HOVER_CHECK_SECONDS = 0.05
+
+-- OnEnter/OnLeave are missed when the cursor moves quickly onto or off a
+-- child that takes the mouse (like a chat log), so while the frame is shown
+-- also re-check whether the cursor is over it a few times a second.
+function TrialChatCommon.WatchHover(frame, update)
+    local sinceLastCheck = 0
+    frame:SetScript("OnUpdate", function(_, elapsed)
+        sinceLastCheck = sinceLastCheck + elapsed
+        if sinceLastCheck >= HOVER_CHECK_SECONDS then
+            sinceLastCheck = 0
+            update()
+        end
+    end)
+end
+
 -- Fades a frame towards the given alpha instead of jumping to it: quickly
 -- when it becomes more visible, more gently when it fades back.
 function TrialChatCommon.FadeTo(frame, targetAlpha)
