@@ -152,9 +152,11 @@ local function rememberClass(fullName, classFile, keep)
     TrialChatCommon.RememberClass(fullName, classFile, keep)
 end
 
-local function rememberUnitClass(unit, fullName)
+-- Class, race and gender of a player the game can see right now.
+local function rememberUnit(unit, fullName)
     local _, classFile = UnitClass(unit)
     rememberClass(fullName, classFile)
+    TrialChatCommon.RememberUnitLook(unit, fullName)
 end
 
 local function getKnownClass(name)
@@ -176,7 +178,7 @@ local function getGroupMembers()
         local name = getFullName(unit)
         if name then
             members[normalizeCharacterName(name)] = name
-            rememberUnitClass(unit, name)
+            rememberUnit(unit, name)
         end
     end
 
@@ -422,8 +424,11 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
     chatText = TrialChatCommon.NormalizeMessageMarkup(chatText)
     chatText = TrialChatCommon.AddSongLinkOwner(chatText, sender)
     noteActiveListener(sender)
-    -- Keep the class of people you chat with, for their name color later.
+    -- Keep the class and looks of people you chat with, for their name
+    -- color and avatar later.
     TrialChatCommon.RememberClass(sender, getKnownClass(sender), true)
+    local raceFile, sex = TrialChatCommon.GetKnownLook(sender)
+    TrialChatCommon.RememberLook(sender, raceFile, sex, true)
 
     if not isEmote then
         TrialChatBubbles.ShowMessage(sender, chatText)
@@ -472,7 +477,7 @@ C_Timer.NewTicker(2, function()
             local nameKey = normalizeCharacterName(name)
             if name and nameKey ~= normalizeCharacterName(fullPlayerName)
                 and not processed[nameKey] then
-                rememberUnitClass(unit, name)
+                rememberUnit(unit, name)
                 processed[nameKey] = true
                 local lastPing = lastPingAt[nameKey]
                 if not lastPing or now - lastPing >= PING_INTERVAL then

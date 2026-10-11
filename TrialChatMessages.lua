@@ -170,7 +170,7 @@ local function initializeRow(row, element)
         UI.SetTextColor(text, Color.text)
         if element.header then
             row.avatar.fullName = element.sender
-            row.avatar:SetPerson(element.name, element.color)
+            row.avatar:SetPerson(element.sender, element.color)
             row.avatar:Show()
             row.name:SetText(element.name)
             UI.SetTextColor(row.name, element.color)
@@ -506,4 +506,9 @@ end
 function List:AddNotice(text, color)
     self.state.last = nil
     self:InsertElements({ { kind = "notice", text = text, color = color or Color.muted } }, true)
+end
+
+-- Sets up the rows on screen again, so their avatars show what's known now.
+function List:RefreshAvatars()
+    self.scrollBox:ReinitializeFrames()
 end

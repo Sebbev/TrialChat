@@ -156,6 +156,132 @@ function TrialChatCommon.GetKnownClass(name)
     return knownClasses[key] or (savedClasses and savedClasses[key])
 end
 
+-- In instances the game hides other players' names and looks from addons.
+local function isSecret(...)
+    if not issecretvalue then return false end
+    for index = 1, select("#", ...) do
+        if issecretvalue((select(index, ...))) then return true end
+    end
+    return false
+end
+TrialChatCommon.IsSecret = isSecret
+
+function TrialChatCommon.GetUnitFullName(unit)
+    local name, realm = UnitFullName(unit)
+    if not name or isSecret(name, realm) then return nil end
+    if realm and realm ~= "" then
+        return name .. "-" .. realm
+    end
+    return name
+end
+
+-- Race and gender of other TrialChat users, for a race portrait when the
+-- game can't draw theirs. Kept like classes: saved for people you chat with.
+local MAX_SAVED_LOOKS = 2000
+local knownLooks = {}
+
+function TrialChatCommon.RememberLook(name, raceFile, sex, keep)
+    sex = tonumber(sex)
+    if not name or name == "" or type(raceFile) ~= "string"
+        or not string.match(raceFile, "^%a+$") or (sex ~= 2 and sex ~= 3) then
+        return
+    end
+    local key = TrialChatCommon.NormalizeCharacterName(name)
+    local look = raceFile .. ":" .. sex
+    knownLooks[key] = look
+    if not keep then return end
+
+    TrialChatDB = TrialChatDB or {}
+    if type(TrialChatDB.looks) ~= "table" then
+        TrialChatDB.looks = {}
+        TrialChatDB.lookCount = 0
+    end
+    if TrialChatDB.looks[key] == nil then
+        if (TrialChatDB.lookCount or 0) >= MAX_SAVED_LOOKS then return end
+        TrialChatDB.lookCount = (TrialChatDB.lookCount or 0) + 1
+    end
+    TrialChatDB.looks[key] = look
+end
+
+function TrialChatCommon.RememberUnitLook(unit, fullName, keep)
+    local _, raceFile = UnitRace(unit)
+    local sex = UnitSex(unit)
+    if not isSecret(raceFile, sex) then
+        TrialChatCommon.RememberLook(fullName, raceFile, sex, keep)
+    end
+end
+
+-- Returns the race file name (like "NightElf") and sex (2 male, 3 female).
+function TrialChatCommon.GetKnownLook(name)
+    if not name or name == "" then return nil end
+    if TrialChatCommon.IsSelf(name) then
+        local _, raceFile = UnitRace("player")
+        return raceFile, UnitSex("player")
+    end
+
+    local key = TrialChatCommon.NormalizeCharacterName(name)
+    local look = knownLooks[key]
+        or (TrialChatDB and type(TrialChatDB.looks) == "table" and TrialChatDB.looks[key])
+    if type(look) ~= "string" then return nil end
+    local raceFile, sex = string.match(look, "^(%a+):([23])$")
+    return raceFile, tonumber(sex)
+end
+
+-- The game can only draw a player's portrait while it knows them as a unit:
+-- you, your party or raid, your target or focus, or a visible nameplate.
+local MAX_NAMEPLATES = 40
+local UNIT_INDEX_SECONDS = 2
+local unitsByName = {}
+local unitsIndexedAt
+
+-- Look again as soon as who the game knows changes.
+local unitWatcher = CreateFrame("Frame")
+for _, event in ipairs({
+    "GROUP_ROSTER_UPDATE", "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED",
+    "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED",
+}) do
+    unitWatcher:RegisterEvent(event)
+end
+unitWatcher:SetScript("OnEvent", function()
+    unitsIndexedAt = nil
+end)
+
+local function indexUnit(unit)
+    if not UnitExists(unit) or not UnitIsPlayer(unit) then return end
+    local name = TrialChatCommon.GetUnitFullName(unit)
+    local key = name and TrialChatCommon.NormalizeCharacterName(name)
+    if key and not unitsByName[key] then
+        unitsByName[key] = unit
+    end
+end
+
+local function indexUnits()
+    unitsByName = {}
+    unitsIndexedAt = GetTime()
+    for index = 1, 4 do indexUnit("party" .. index) end
+    for index = 1, 40 do indexUnit("raid" .. index) end
+    indexUnit("target")
+    indexUnit("focus")
+    for index = 1, MAX_NAMEPLATES do indexUnit("nameplate" .. index) end
+end
+
+function TrialChatCommon.FindUnit(name)
+    if not name or name == "" then return nil end
+    if TrialChatCommon.IsSelf(name) then return "player" end
+
+    local key = TrialChatCommon.NormalizeCharacterName(name)
+    local function stillThem(unit)
+        local unitName = unit and TrialChatCommon.GetUnitFullName(unit)
+        return unitName and TrialChatCommon.NormalizeCharacterName(unitName) == key
+    end
+    if stillThem(unitsByName[key]) then return unitsByName[key] end
+    if not unitsIndexedAt or GetTime() - unitsIndexedAt > UNIT_INDEX_SECONDS then
+        indexUnits()
+        if stillThem(unitsByName[key]) then return unitsByName[key] end
+    end
+    return nil
+end
+
 function TrialChatCommon.RegisterLinkInput(input)
     linkInputs[input] = true
 
