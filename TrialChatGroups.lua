@@ -1531,6 +1531,26 @@ function Groups:GetActiveGroups()
     return groups
 end
 
+function Groups:GetMembers(id)
+    local session = activeGroups[id]
+    local members = {}
+    for _, member in pairs(session and session.members or {}) do
+        local memberIsSelf = isSelf(member.name)
+        local shortName = string.match(member.name, "^([^-]+)") or member.name
+        members[#members + 1] = {
+            name = memberIsSelf and shortName .. " (You)" or shortName,
+            fullName = member.name,
+            classFile = member.classFile,
+            isSelf = memberIsSelf,
+            isGroupMember = true,
+        }
+    end
+    table.sort(members, function(left, right)
+        return strlower(left.name) < strlower(right.name)
+    end)
+    return members
+end
+
 function Groups:GetTotalUnreadCount()
     local count = 0
     for _, session in pairs(activeGroups) do
@@ -1709,6 +1729,7 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
                 if session.window then
                     session.window:UpdateMembers()
                 end
+                notifyChange("members", id)
             end
         end
         return

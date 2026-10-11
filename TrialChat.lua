@@ -46,6 +46,7 @@ local recipientToggleButton
 local nearbyCountText
 local activeCountText
 local addListenerInput
+local addListenerButton
 local listenersExpanded = false
 local updateRecipientList
 local updateChatContentLayout
@@ -319,6 +320,7 @@ local function createRecipientRow(index)
                 self.recipientName, self.recipientName, button)
             return
         end
+        if self.isGroupMember then return end
 
         local permanentListeners = getPermanentListeners()
         local existingKey = findPermanentListenerKey(self.recipientName)
@@ -335,6 +337,8 @@ local function createRecipientRow(index)
         local tooltipText
         if self.isSelf then
             tooltipText = "This is you."
+        elseif self.isGroupMember then
+            tooltipText = "Right-click for player options."
         elseif findPermanentListenerKey(self.recipientName) then
             tooltipText = "Left-click to stop keeping this listener.\nRight-click for player options."
         else
@@ -354,7 +358,11 @@ updateRecipientList = function(force)
     end
     lastRenderedRecipientGeneration = recipientListGeneration
 
-    recipientList = getTrialChatRecipients()
+    if selectedTab == NEARBY_TAB then
+        recipientList = getTrialChatRecipients()
+    else
+        recipientList = TrialChatGroups:GetMembers(selectedTab)
+    end
     while #recipientRows < #recipientList do
         createRecipientRow(#recipientRows + 1)
     end
@@ -371,8 +379,10 @@ updateRecipientList = function(force)
     if selectedTab == NEARBY_TAB then
         nearbyCountText:SetText("Nearby Players (" .. nearbyCount .. ")")
         activeCountText:SetText("Active listeners (" .. #recipientList .. ")")
+        recipientTitle:SetText("Active listeners (" .. #recipientList .. ")")
+    else
+        recipientTitle:SetText("Members (" .. #recipientList .. ")")
     end
-    recipientTitle:SetText("Active listeners (" .. #recipientList .. ")")
     if recipientToggleButton then
         recipientToggleButton:SetText(listenersExpanded and "<" or ">")
     end
@@ -390,6 +400,7 @@ updateRecipientList = function(force)
             row.label:SetText(color and color .. name .. "|r" or name)
             row.recipientName = recipient.fullName
             row.isSelf = recipient.isSelf
+            row.isGroupMember = recipient.isGroupMember
             row:Show()
         else
             row:Hide()
@@ -688,6 +699,16 @@ layoutTabs = function()
     end
 end
 
+-- The side panel lists nearby listeners on the Nearby tab and the group's
+-- members on a group tab; only listeners can be added by name.
+local function updateRecipientPanelMode()
+    local isNearby = selectedTab == NEARBY_TAB
+    addListenerInput:SetShown(isNearby)
+    addListenerButton:SetShown(isNearby)
+    recipientScrollFrame:SetPoint("BOTTOMRIGHT", recipientPanel, "BOTTOMRIGHT",
+        -24, isNearby and 38 or 6)
+end
+
 selectTab = function(key)
     if not chatWindow then return end
 
@@ -699,18 +720,13 @@ selectTab = function(key)
         end
         renderNearbyLog()
         chatInput:SetMaxLetters(MAX_MESSAGE_BYTES)
-        recipientToggleButton:Show()
-        if chatWindow:IsShown() and listenersExpanded then
-            recipientPanel:Show()
-        end
-        updateRecipientList(true)
     else
         TrialChatGroups:SetViewedGroup(chatWindow:IsShown() and key or nil)
         renderGroupLog(key)
         chatInput:SetMaxLetters(TrialChatGroups.MAX_MESSAGE_BYTES)
-        recipientToggleButton:Hide()
-        recipientPanel:Hide()
     end
+    updateRecipientPanelMode()
+    updateRecipientList(true)
     layoutTabs()
 end
 
@@ -727,6 +743,9 @@ local function onGroupsChanged(kind, id, entry, appended)
         if chatWindow:IsShown() then
             noteChatMessage()
         end
+    end
+    if kind == "members" and id == selectedTab then
+        updateRecipientList(true)
     end
     layoutTabs()
 end
@@ -821,6 +840,10 @@ local function createChatWindow()
     recipientTitle:SetText("Active listeners")
 
     listenersExpanded = false
+    local function getToggleTooltip()
+        local listName = selectedTab == NEARBY_TAB and "listeners" or "members"
+        return (listenersExpanded and "Hide " or "Show ") .. listName
+    end
     recipientToggleButton = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
     recipientToggleButton:SetSize(22, 18)
     recipientToggleButton:SetPoint("LEFT", activeCountText, "RIGHT", 4, 0)
@@ -833,12 +856,12 @@ local function createChatWindow()
         end
         updateRecipientList(true)
         if GameTooltip:GetOwner() == recipientToggleButton then
-            GameTooltip:SetText(listenersExpanded and "Hide listeners" or "Show listeners")
+            GameTooltip:SetText(getToggleTooltip())
         end
     end)
     recipientToggleButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText(listenersExpanded and "Hide listeners" or "Show listeners")
+        GameTooltip:SetText(getToggleTooltip())
         GameTooltip:Show()
     end)
     recipientToggleButton:SetScript("OnLeave", GameTooltip_Hide)
@@ -898,7 +921,7 @@ local function createChatWindow()
         self:ClearFocus()
     end)
 
-    local addListenerButton = CreateFrame("Button", nil, recipientPanel, "UIPanelButtonTemplate")
+    addListenerButton = CreateFrame("Button", nil, recipientPanel, "UIPanelButtonTemplate")
     addListenerButton:SetSize(38, 22)
     addListenerButton:SetPoint("LEFT", addListenerInput, "RIGHT", 4, 0)
     addListenerButton:SetText("Add")
@@ -916,10 +939,10 @@ local function createChatWindow()
     recipientPanel:Hide()
 
     chatWindow:SetScript("OnShow", function()
+        if listenersExpanded then
+            recipientPanel:Show()
+        end
         if selectedTab == NEARBY_TAB then
-            if listenersExpanded then
-                recipientPanel:Show()
-            end
             nearbyUnread = 0
         elseif TrialChatGroups then
             TrialChatGroups:SetViewedGroup(selectedTab)
