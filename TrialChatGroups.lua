@@ -2030,10 +2030,9 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             for key, member in pairs(session.members) do
                 if not namesMatch(member.name, selfName or UnitName("player"))
                     and not namesMatch(member.name, sender) then
+                    -- Only the member list: a CLASS message is always read as
+                    -- the sender's own class, and members announce theirs.
                     sendGroupProtocol(session, "MEMBER", sender, member.name)
-                    if member.classFile then
-                        sendGroupProtocol(session, "CLASS", sender, member.classFile)
-                    end
                 end
             end
             for _, memberName in pairs(session.knownMembers or {}) do
