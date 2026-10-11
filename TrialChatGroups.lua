@@ -80,6 +80,38 @@ end
 
 local saveGroup = queueGroupSave
 
+local changeHandler
+local viewedGroupId
+
+local function notifyChange(kind, id, ...)
+    if changeHandler then
+        changeHandler(kind, id, ...)
+    end
+end
+
+local function isGroupViewed(session)
+    return viewedGroupId == session.id
+        or (session.window ~= nil and session.window.frame:IsShown())
+end
+
+local function markGroupRead(session)
+    for _, entry in ipairs(session.history or {}) do
+        if type(entry) == "table" then
+            entry.read = true
+        end
+    end
+end
+
+local function getUnreadCount(session)
+    local count = 0
+    for _, entry in ipairs(session.history or {}) do
+        if type(entry) == "table" and not entry.read and not isSelf(entry.sender) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 local function addKnownMember(session, name)
     if not name or name == "" or isSelf(name) then return end
     session.knownMembers = session.knownMembers or {}
@@ -107,6 +139,9 @@ local function addMember(session, name, classFile)
     if activeGroups[session.id] == session and saveGroup then
         saveGroup(session)
     end
+    if activeGroups[session.id] == session then
+        notifyChange("members", session.id)
+    end
 end
 
 local function removeMember(session, name)
@@ -132,6 +167,9 @@ local function removeMember(session, name)
     end
     if activeGroups[session.id] == session and saveGroup then
         saveGroup(session)
+    end
+    if activeGroups[session.id] == session then
+        notifyChange("members", session.id)
     end
 end
 
@@ -208,17 +246,25 @@ local function renderGroupMessage(session, entry)
     return timestamp .. senderText .. ": " .. displayMessage
 end
 
+local function getHistoryLines(session)
+    local lines = {}
+    for _, item in ipairs(session.history or {}) do
+        local line = type(item) == "table"
+            and renderGroupMessage(session, item) or item
+        if type(line) == "string" then
+            lines[#lines + 1] = TrialChatCommon.RemovePlayerLinks(line)
+        end
+    end
+    return lines
+end
+
 local function rebuildGroupLog(session)
     local window = session.window
     if not window then return end
 
     window.log:Clear()
-    for _, item in ipairs(session.history or {}) do
-        local line = type(item) == "table"
-            and renderGroupMessage(session, item) or item
-        if type(line) == "string" then
-            window.log:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
-        end
+    for _, line in ipairs(getHistoryLines(session)) do
+        window.log:AddMessage(line)
     end
     window.log:ScrollToBottom()
 end
@@ -307,6 +353,9 @@ local function addGroupMessage(
         isEmote = isEmote,
         timestamp = timestamp,
     }
+    if isSelf(sender) or isGroupViewed(session) then
+        entry.read = true
+    end
     local insertAt = insertHistoryEntry(session, entry)
 
     if activeGroups[session.id] == session then
@@ -325,6 +374,9 @@ local function addGroupMessage(
         C_Timer.After(10, function()
             updateWindowAlpha(session.window)
         end)
+    end
+    if insertAt and activeGroups[session.id] == session then
+        notifyChange("message", session.id, entry, insertAt == #session.history)
     end
     return insertAt ~= nil, entry
 end
@@ -406,6 +458,43 @@ local function receiveHistoryChunk(session, sender, body)
 
     addGroupMessage(session, entrySender, message,
         emoteFlag == "E", entryId, timestamp, true)
+end
+
+local function sendGroupMessage(session, message)
+    message = strtrim(message or "")
+    if message == "" then return end
+
+    local isEmote
+    local emoteToken
+    local emoteTarget
+    message, isEmote, emoteToken, emoteTarget =
+        TrialChatCommon.ParseEmote(message)
+    if not message then
+        showNotice("Enter the text for your emote.")
+        return
+    end
+    if #message > MAX_GROUP_MESSAGE_BYTES then
+        showNotice("Group messages are limited to " .. MAX_GROUP_MESSAGE_BYTES .. " bytes.")
+        return
+    end
+    local sender = selfName or UnitName("player")
+    session.messageCounter = (session.messageCounter or 0) + 1
+    local messageId = makeMessageId(sender, session.messageCounter)
+    local timestamp = GetServerTime()
+    local messageKind = isEmote and "EMOTE2" or "MSG2"
+    local body = table.concat({
+        messageId, tostring(timestamp), isEmote and "E" or "M", message,
+    }, ":")
+    local encodedBody = TrialChatCommon.EncodeMessageMarkup(body)
+    local payload = GROUP_TAG .. messageKind .. "|" .. session.id .. "|" .. encodedBody
+    if #payload > 255 then
+        showNotice("That message is too long for the addon chat protocol.")
+        return
+    end
+
+    TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
+    addGroupMessage(session, sender, message, isEmote, messageId, timestamp)
+    sendToMembers(session, messageKind, body)
 end
 
 local function createGroupWindow(session)
@@ -514,12 +603,8 @@ local function createGroupWindow(session)
             self:ScrollDown()
         end
     end)
-    for _, line in ipairs(session.history or {}) do
-        local rendered = type(line) == "table"
-            and renderGroupMessage(session, line) or line
-        if type(rendered) == "string" then
-            window.log:AddMessage(TrialChatCommon.RemovePlayerLinks(rendered))
-        end
+    for _, line in ipairs(getHistoryLines(session)) do
+        window.log:AddMessage(line)
     end
     window.log:ScrollToBottom()
     window.log:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -58)
@@ -605,46 +690,9 @@ local function createGroupWindow(session)
         updateWindowAlpha(window)
     end)
     input:SetScript("OnEnterPressed", function(self)
-        local message = strtrim(self:GetText() or "")
+        local message = self:GetText()
         self:SetText("")
-        if message == "" then
-            self:SetFocus()
-            return
-        end
-        local isEmote
-        local emoteToken
-        local emoteTarget
-        message, isEmote, emoteToken, emoteTarget =
-            TrialChatCommon.ParseEmote(message)
-        if not message then
-            showNotice("Enter the text for your emote.")
-            self:SetFocus()
-            return
-        end
-        if #message > MAX_GROUP_MESSAGE_BYTES then
-            showNotice("Group messages are limited to " .. MAX_GROUP_MESSAGE_BYTES .. " bytes.")
-            self:SetFocus()
-            return
-        end
-        local sender = selfName or UnitName("player")
-        session.messageCounter = (session.messageCounter or 0) + 1
-        local messageId = makeMessageId(sender, session.messageCounter)
-        local timestamp = GetServerTime()
-        local messageKind = isEmote and "EMOTE2" or "MSG2"
-        local body = table.concat({
-            messageId, tostring(timestamp), isEmote and "E" or "M", message,
-        }, ":")
-        local encodedBody = TrialChatCommon.EncodeMessageMarkup(body)
-        local payload = GROUP_TAG .. messageKind .. "|" .. session.id .. "|" .. encodedBody
-        if #payload > 255 then
-            showNotice("That message is too long for the addon chat protocol.")
-            self:SetFocus()
-            return
-        end
-
-        TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
-        addGroupMessage(session, sender, message, isEmote, messageId, timestamp)
-        sendToMembers(session, messageKind, body)
+        sendGroupMessage(session, message)
         self:SetFocus()
     end)
     input:SetScript("OnEscapePressed", function(self)
@@ -734,6 +782,8 @@ local function createGroupWindow(session)
             memberPanel:Show()
         end
         window:UpdateMembers()
+        markGroupRead(session)
+        notifyChange("unread", session.id)
     end)
     frame:HookScript("OnHide", function()
         memberPanel:Hide()
@@ -773,6 +823,7 @@ persistGroup = function(session)
         height = session.height,
         history = session.history or {},
         knownMembers = knownMembers,
+        unreadTracking = true,
     }
 end
 
@@ -834,6 +885,7 @@ local function activateGroup(session)
         session.window.frame:Show()
         session.window.input:SetFocus()
     end
+    notifyChange("groups", session.id)
 end
 
 local function completePendingJoin(session, sender)
@@ -900,6 +952,10 @@ local function joinGroup(name, password, targetName, savedGroup, autoJoin)
         joinCandidates = joinCandidates,
         hasSavedGroup = type(savedGroup) == "table",
     }
+    -- History saved before unread tracking existed counts as already read.
+    if not (savedGroup and savedGroup.unreadTracking) then
+        markGroupRead(session)
+    end
     pendingJoins[id] = session
     startJoinAttempt(session, 1)
 end
@@ -942,6 +998,7 @@ startJoinAttempt = function(session, candidateIndex)
                 width = session.width,
                 height = session.height,
                 muted = session.muted,
+                unreadTracking = true,
             }, session.autoJoin)
             return
         end
@@ -986,6 +1043,9 @@ createGroup = function(name, password, savedGroup, autoJoin)
         knownMembers = getKnownMembers(savedGroup),
         reconnectName = savedGroup and savedGroup.memberName,
     }
+    if not (savedGroup and savedGroup.unreadTracking) then
+        markGroupRead(session)
+    end
     activateGroup(session)
 end
 
@@ -1136,6 +1196,7 @@ local function disconnectSession(id)
         session.window.input:ClearFocus()
         session.window:UpdateMembers()
     end
+    notifyChange("groups", id)
     return session
 end
 
@@ -1183,6 +1244,7 @@ local function deleteGroup(id)
     end
     pendingGroupSaves[id] = nil
     getSavedGroups()[id] = nil
+    notifyChange("groups", id)
     showNotice("Deleted " .. (session and session.name or savedGroup.name) .. ".")
 end
 
@@ -1440,6 +1502,77 @@ function Groups:ToggleMenu(anchor)
     menu:Show()
 end
 
+Groups.MAX_MESSAGE_BYTES = MAX_GROUP_MESSAGE_BYTES
+
+-- The handler is called as handler(kind, groupId, ...) where kind is "groups"
+-- (a group connected or went away), "members", "unread", or "message"
+-- (followed by the history entry and whether it was appended at the end).
+function Groups:SetChangeHandler(handler)
+    changeHandler = handler
+end
+
+function Groups:GetActiveGroups()
+    local groups = {}
+    for id, session in pairs(activeGroups) do
+        local memberCount = 0
+        for _ in pairs(session.members) do
+            memberCount = memberCount + 1
+        end
+        groups[#groups + 1] = {
+            id = id,
+            name = session.name,
+            unread = getUnreadCount(session),
+            memberCount = memberCount,
+        }
+    end
+    table.sort(groups, function(left, right)
+        return strlower(left.name) < strlower(right.name)
+    end)
+    return groups
+end
+
+function Groups:GetTotalUnreadCount()
+    local count = 0
+    for _, session in pairs(activeGroups) do
+        count = count + getUnreadCount(session)
+    end
+    return count
+end
+
+function Groups:GetHistoryLines(id)
+    local session = activeGroups[id]
+    return session and getHistoryLines(session) or {}
+end
+
+function Groups:RenderMessage(id, entry)
+    local session = activeGroups[id]
+    return session and TrialChatCommon.RemovePlayerLinks(
+        renderGroupMessage(session, entry))
+end
+
+function Groups:SetViewedGroup(id)
+    viewedGroupId = id
+    local session = id and activeGroups[id]
+    if session then
+        markGroupRead(session)
+        notifyChange("unread", id)
+    end
+end
+
+function Groups:SendMessage(id, message)
+    local session = activeGroups[id]
+    if session then
+        sendGroupMessage(session, message)
+    end
+end
+
+function Groups:OpenWindow(id)
+    local session = activeGroups[id]
+    if session then
+        createGroupWindow(session)
+    end
+end
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:RegisterEvent("PLAYER_LOGOUT")
@@ -1604,6 +1737,7 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             pendingJoins[id] = nil
             pendingGroupSaves[id] = nil
             getSavedGroups()[id] = nil
+            notifyChange("groups", id)
             showNotice("The creator deleted " .. (session and session.name
                 or (savedGroup and savedGroup.name) or id) .. ".")
         end

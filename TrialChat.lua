@@ -53,6 +53,19 @@ local RECIPIENT_ROW_HEIGHT = 18
 local CHAT_WINDOW_IDLE_ALPHA = 0.45
 local CHAT_MESSAGE_VISIBLE_SECONDS = 10
 local lastChatMessageAt
+local NEARBY_TAB = "nearby"
+local TAB_TOP = -56
+local TAB_HEIGHT = 20
+local TAB_GAP = 2
+local MORE_TABS_WIDTH = 64
+local selectedTab = NEARBY_TAB
+local nearbyUnread = 0
+local tabButtons = {}
+local tabMeasureText
+local moreTabsButton
+local overflowTabs = {}
+local selectTab
+local layoutTabs
 
 local function updateChatWindowAlpha()
     if not chatWindow then return end
@@ -355,8 +368,10 @@ updateRecipientList = function(force)
     for _ in pairs(nearbyNames) do
         nearbyCount = nearbyCount + 1
     end
-    nearbyCountText:SetText("Nearby Players (" .. nearbyCount .. ")")
-    activeCountText:SetText("Active listeners (" .. #recipientList .. ")")
+    if selectedTab == NEARBY_TAB then
+        nearbyCountText:SetText("Nearby Players (" .. nearbyCount .. ")")
+        activeCountText:SetText("Active listeners (" .. #recipientList .. ")")
+    end
     recipientTitle:SetText("Active listeners (" .. #recipientList .. ")")
     if recipientToggleButton then
         recipientToggleButton:SetText(listenersExpanded and "<" or ">")
@@ -386,7 +401,7 @@ updateChatContentLayout = function()
     if not chatLog or not chatInput then return end
 
     chatLog:ClearAllPoints()
-    chatLog:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 14, -70)
+    chatLog:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", 14, TAB_TOP - TAB_HEIGHT - 4)
     chatLog:SetPoint("BOTTOMRIGHT", chatWindow, "BOTTOMRIGHT", -14, 48)
     chatInput:ClearAllPoints()
     chatInput:SetHeight(26)
@@ -407,10 +422,22 @@ local function printMessage(sender, message, color, nameColor, isEmote, senderKe
     end
     saveChatHistoryLine(line)
     if openChatWindow then
+        -- A closed window reopens on the Nearby tab; an open one stays on
+        -- whatever tab is showing and counts the message as unread.
+        local switchedTab = false
+        if selectedTab ~= NEARBY_TAB and not chatWindow:IsShown() then
+            selectTab(NEARBY_TAB)
+            switchedTab = true
+        end
         openChatWindow(false)
         noteChatMessage()
-        chatLog:AddMessage(line)
-        chatLog:ScrollToBottom()
+        if selectedTab ~= NEARBY_TAB then
+            nearbyUnread = nearbyUnread + 1
+            layoutTabs()
+        elseif not switchedTab then
+            chatLog:AddMessage(line)
+            chatLog:ScrollToBottom()
+        end
     else
         print(line)
     end
@@ -481,6 +508,227 @@ local function printIncomingMessage(
                 pending.color, pending.nameColor, pending.isEmote, pending.senderKey)
         end
     end)
+end
+
+local function renderNearbyLog()
+    chatLog:Clear()
+    for _, line in ipairs(getChatHistory()) do
+        if type(line) == "string" then
+            chatLog:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
+        end
+    end
+    chatLog:ScrollToBottom()
+end
+
+local function renderGroupLog(id)
+    chatLog:Clear()
+    for _, line in ipairs(TrialChatGroups:GetHistoryLines(id)) do
+        chatLog:AddMessage(line)
+    end
+    chatLog:ScrollToBottom()
+end
+
+local function getTabs()
+    local tabs = {
+        { key = NEARBY_TAB, name = "Nearby", unread = nearbyUnread },
+    }
+    if TrialChatGroups then
+        for _, group in ipairs(TrialChatGroups:GetActiveGroups()) do
+            tabs[#tabs + 1] = {
+                key = group.id,
+                name = group.name,
+                unread = group.unread,
+                memberCount = group.memberCount,
+            }
+        end
+    end
+    return tabs
+end
+
+local function getTabLabel(tab)
+    if tab.unread > 0 then
+        return tab.name .. " |cffff7d0a(" .. tab.unread .. ")|r"
+    end
+    return tab.name
+end
+
+local function createTabButton(index)
+    local button = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
+    button:SetHeight(TAB_HEIGHT)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:SetScript("OnClick", function(self, mouseButton)
+        if mouseButton == "RightButton" then
+            if self.tabKey ~= NEARBY_TAB then
+                TrialChatGroups:OpenWindow(self.tabKey)
+            end
+            return
+        end
+        selectTab(self.tabKey)
+    end)
+    button:SetScript("OnEnter", function(self)
+        if self.tabKey == NEARBY_TAB then return end
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("Right-click to open in its own window.")
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", GameTooltip_Hide)
+    tabButtons[index] = button
+    return button
+end
+
+local function createMoreTabsButton()
+    local button = CreateFrame("Button", nil, chatWindow, "UIPanelButtonTemplate")
+    button:SetSize(MORE_TABS_WIDTH, TAB_HEIGHT)
+    button:SetNormalFontObject("GameFontNormalSmall")
+    button:SetScript("OnClick", function(self)
+        MenuUtil.CreateContextMenu(self, function(_, rootDescription)
+            for _, tab in ipairs(overflowTabs) do
+                local key = tab.key
+                rootDescription:CreateButton(getTabLabel(tab), function()
+                    selectTab(key)
+                end)
+            end
+        end)
+    end)
+    return button
+end
+
+layoutTabs = function()
+    if not chatWindow or not tabMeasureText then return end
+
+    local tabs = getTabs()
+    local selected
+    for _, tab in ipairs(tabs) do
+        if tab.key == selectedTab then
+            selected = tab
+        end
+    end
+    if not selected then
+        selectTab(NEARBY_TAB)
+        return
+    end
+
+    local available = chatWindow:GetWidth() - 28
+    local total = 0
+    for _, tab in ipairs(tabs) do
+        tabMeasureText:SetText(getTabLabel(tab))
+        tab.width = math.max(48, math.ceil(tabMeasureText:GetStringWidth()) + 20)
+        total = total + tab.width + TAB_GAP
+    end
+    local limit = available
+    if total - TAB_GAP > available then
+        limit = available - MORE_TABS_WIDTH - TAB_GAP
+    end
+
+    local visible, overflow = {}, {}
+    local used = 0
+    for index, tab in ipairs(tabs) do
+        if index == 1 or (#overflow == 0 and used + tab.width <= limit) then
+            visible[#visible + 1] = tab
+            used = used + tab.width + TAB_GAP
+        else
+            overflow[#overflow + 1] = tab
+        end
+    end
+    -- Keep the selected tab visible by moving tabs before it into "More".
+    for index, tab in ipairs(overflow) do
+        if tab == selected then
+            table.remove(overflow, index)
+            while #visible > 1 and used + selected.width > limit do
+                local dropped = table.remove(visible)
+                used = used - dropped.width - TAB_GAP
+                table.insert(overflow, 1, dropped)
+            end
+            visible[#visible + 1] = selected
+            break
+        end
+    end
+
+    local x = 14
+    for index, tab in ipairs(visible) do
+        local button = tabButtons[index] or createTabButton(index)
+        button.tabKey = tab.key
+        button:SetText(getTabLabel(tab))
+        button:SetWidth(tab.width)
+        button:ClearAllPoints()
+        button:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", x, TAB_TOP)
+        if tab == selected then
+            button:SetNormalFontObject("GameFontHighlightSmall")
+            button:LockHighlight()
+        else
+            button:SetNormalFontObject("GameFontNormalSmall")
+            button:UnlockHighlight()
+        end
+        button:Show()
+        x = x + tab.width + TAB_GAP
+    end
+    for index = #visible + 1, #tabButtons do
+        tabButtons[index]:Hide()
+    end
+
+    overflowTabs = overflow
+    if #overflow > 0 then
+        moreTabsButton = moreTabsButton or createMoreTabsButton()
+        local unread = 0
+        for _, tab in ipairs(overflow) do
+            unread = unread + tab.unread
+        end
+        moreTabsButton:SetText(unread > 0
+            and "More |cffff7d0a(" .. unread .. ")|r" or "More")
+        moreTabsButton:ClearAllPoints()
+        moreTabsButton:SetPoint("TOPLEFT", chatWindow, "TOPLEFT", x, TAB_TOP)
+        moreTabsButton:Show()
+    elseif moreTabsButton then
+        moreTabsButton:Hide()
+    end
+
+    if selectedTab ~= NEARBY_TAB then
+        nearbyCountText:SetText(selected.name)
+        activeCountText:SetText("Online members (" .. selected.memberCount .. ")")
+    end
+end
+
+selectTab = function(key)
+    if not chatWindow then return end
+
+    selectedTab = key
+    if key == NEARBY_TAB then
+        nearbyUnread = 0
+        if TrialChatGroups then
+            TrialChatGroups:SetViewedGroup(nil)
+        end
+        renderNearbyLog()
+        chatInput:SetMaxLetters(MAX_MESSAGE_BYTES)
+        recipientToggleButton:Show()
+        if chatWindow:IsShown() and listenersExpanded then
+            recipientPanel:Show()
+        end
+        updateRecipientList(true)
+    else
+        TrialChatGroups:SetViewedGroup(chatWindow:IsShown() and key or nil)
+        renderGroupLog(key)
+        chatInput:SetMaxLetters(TrialChatGroups.MAX_MESSAGE_BYTES)
+        recipientToggleButton:Hide()
+        recipientPanel:Hide()
+    end
+    layoutTabs()
+end
+
+local function onGroupsChanged(kind, id, entry, appended)
+    if not chatWindow then return end
+
+    if kind == "message" and id == selectedTab then
+        if appended then
+            chatLog:AddMessage(TrialChatGroups:RenderMessage(id, entry))
+            chatLog:ScrollToBottom()
+        else
+            renderGroupLog(id)
+        end
+        if chatWindow:IsShown() then
+            noteChatMessage()
+        end
+    end
+    layoutTabs()
 end
 
 local function createChatWindow()
@@ -668,14 +916,28 @@ local function createChatWindow()
     recipientPanel:Hide()
 
     chatWindow:SetScript("OnShow", function()
-        if listenersExpanded then
-            recipientPanel:Show()
+        if selectedTab == NEARBY_TAB then
+            if listenersExpanded then
+                recipientPanel:Show()
+            end
+            nearbyUnread = 0
+        elseif TrialChatGroups then
+            TrialChatGroups:SetViewedGroup(selectedTab)
         end
+        layoutTabs()
         updateChatWindowAlpha()
     end)
     chatWindow:SetScript("OnHide", function()
         recipientPanel:Hide()
+        if TrialChatGroups then
+            TrialChatGroups:SetViewedGroup(nil)
+        end
     end)
+    chatWindow:HookScript("OnSizeChanged", function()
+        layoutTabs()
+    end)
+    tabMeasureText = chatWindow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    tabMeasureText:Hide()
 
     local resizeGrip = CreateFrame("Button", nil, chatWindow)
     resizeGrip:SetSize(16, 16)
@@ -724,12 +986,7 @@ local function createChatWindow()
             self:ScrollDown()
         end
     end)
-    for _, line in ipairs(getChatHistory()) do
-        if type(line) == "string" then
-            chatLog:AddMessage(TrialChatCommon.RemovePlayerLinks(line))
-        end
-    end
-    chatLog:ScrollToBottom()
+    renderNearbyLog()
 
     chatInput = CreateFrame("EditBox", nil, chatWindow, "InputBoxTemplate")
     chatInput:SetAutoFocus(false)
@@ -741,7 +998,11 @@ local function createChatWindow()
         local message = self:GetText()
         self:SetText("")
         if strtrim(message or "") ~= "" then
-            sendTrialChatMessage(message)
+            if selectedTab == NEARBY_TAB then
+                sendTrialChatMessage(message)
+            else
+                TrialChatGroups:SendMessage(selectedTab, message)
+            end
         end
         self:SetFocus()
     end)
@@ -752,6 +1013,10 @@ local function createChatWindow()
     updateChatContentLayout()
     chatWindow:Hide()
     updateRecipientList(true)
+    if TrialChatGroups then
+        TrialChatGroups:SetChangeHandler(onGroupsChanged)
+    end
+    layoutTabs()
 end
 
 openChatWindow = function(focusInput)
@@ -766,6 +1031,9 @@ end
 
 showTrialChatNotice = function(message)
     openChatWindow(false)
+    if selectedTab ~= NEARBY_TAB then
+        selectTab(NEARBY_TAB)
+    end
     chatLog:AddMessage(message)
     chatLog:ScrollToBottom()
 end
@@ -799,6 +1067,11 @@ local function showMinimapTooltip(button)
         chatWindow and chatWindow:IsShown() and "Click to hide TrialChat."
             or "Click to show TrialChat.",
         1, 1, 1)
+    local unread = TrialChatGroups and TrialChatGroups:GetTotalUnreadCount() or 0
+    if unread > 0 then
+        GameTooltip:AddLine(unread .. " unread group message"
+            .. (unread == 1 and "" or "s") .. ".", 1, 0.49, 0.04)
+    end
     GameTooltip:AddLine("Right-click for group chats.", 0.7, 0.7, 0.7)
     GameTooltip:AddLine("Drag to move this button.", 0.7, 0.7, 0.7)
     GameTooltip:Show()
@@ -1100,6 +1373,9 @@ sendTrialChatMessage = function(msg)
     local myNameColor = getClassColor(playerClass)
     local messageColor = isEmote and "|cffff7d0a"
         or sentToGroup and "|cffff7d0a" or "|cffffcc00"
+    if chatWindow and selectedTab ~= NEARBY_TAB then
+        selectTab(NEARBY_TAB)
+    end
     printMessage(myShortName, msg, messageColor, myNameColor, isEmote)
     if not isEmote then
         TrialChatBubbles.ShowOwnMessage(msg)
