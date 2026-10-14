@@ -695,30 +695,6 @@ local function showCreateMenu(owner)
     end)
 end
 
-local function showSettingsMenu(owner)
-    local function bubblesOn()
-        return TrialChatBubbles.IsEnabled()
-    end
-    MenuUtil.CreateContextMenu(owner, function(_, root)
-        root:CreateTitle("Chat bubbles")
-        root:CreateCheckbox("Show chat bubbles", bubblesOn, function()
-            SlashCmdList.TRIALCHATBUBBLES("")
-        end)
-        local own = root:CreateCheckbox("Over your own character", function()
-            return TrialChatBubbles.IsEnabled("self")
-        end, function()
-            SlashCmdList.TRIALCHATBUBBLES("self")
-        end)
-        own:SetEnabled(bubblesOn)
-        local groups = root:CreateCheckbox("For group chats", function()
-            return TrialChatBubbles.IsEnabled("groups")
-        end, function()
-            SlashCmdList.TRIALCHATBUBBLES("groups")
-        end)
-        groups:SetEnabled(bubblesOn)
-    end)
-end
-
 ---------------------------------------------------------------------------
 -- Layout and selection
 ---------------------------------------------------------------------------
@@ -924,7 +900,7 @@ local function createSidebar()
     local settingsButton = UI.CreateButton(sidebar, {
         style = "ghost", icon = "gear", iconSize = 17, width = 30, height = 30,
         tooltip = "Settings",
-        onClick = function(self) showSettingsMenu(self) end,
+        onClick = function() TrialChatOptions:Toggle() end,
     })
     settingsButton:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", -10, -12)
 

@@ -10,7 +10,9 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 
 * **Toggle Window:** Type `/tc` in your chat or click the mini-map button to show/hide the interface.
 * **Keybind Support:** A shortcut key option is also available under the game's official keybind menu.
-* **Chat Bubbles:** Type `/tcbubbles` to turn chat bubbles on or off, `/tcbubbles self` for just the bubble over your own character, or `/tcbubbles groups` for just group chat bubbles. The same switches are under the gear button in the window.
+* **Options:** Open it with **Options** in the mini-map button's right-click menu, or with the gear button in the window. It has every option in one place: chat bubbles (all, over your own character, for group chats) and **Echo to Say (/s)**. Press Escape or the close button to dismiss it.
+* **Echo to Say:** With **Echo to Say (/s)** on, your nearby messages are also sent as a normal `/say`, so players without TrialChat can read them (your bubbles aren't doubled).
+* **Chat Bubbles:** Type `/tcbubbles` to turn chat bubbles on or off, `/tcbubbles self` for just the bubble over your own character, or `/tcbubbles groups` for just group chat bubbles. The same switches are in the Options window, which the gear button in the window opens.
 * **Emotes:** Type them like in normal chat (`/wave`, `/e waves hello`), or pick one with the smiley button next to the message box.
 
 ---
