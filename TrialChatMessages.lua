@@ -17,6 +17,9 @@ local TEXT_BOTTOM = 2
 local CENTERED_PADDING = 7
 local DIVIDER_HEIGHT = 34
 local MIN_TEXT_HEIGHT = 14
+-- A reply shown above a message: a short bar and the quoted line.
+local REPLY_GAP = 3
+local REPLY_INDENT = 8
 -- Messages from the same person this close together share one header.
 local GROUP_SECONDS = 5 * 60
 local RELAYOUT_DELAY = 0.15
@@ -38,6 +41,14 @@ end
 
 local function onHyperlinkClick(_, link, text, button)
     TrialChatCommon.HandleHyperlinkClick(link, text, button)
+end
+
+-- The quoted part of a reply: who and what, on one muted line.
+local function formatReply(reply, colorFor)
+    local sender = TrialChatCommon.ShortName(reply.sender or "?")
+    local text = TrialChatCommon.RemovePlayerLinks(reply.text or "")
+    return UI.ColorText(colorFor({ sender = reply.sender }), sender)
+        .. UI.ColorText(Color.muted, ": " .. text)
 end
 
 local function onHyperlinkEnter(self, link, text)
@@ -80,13 +91,24 @@ local function onAvatarClick(avatar)
     end
 end
 
--- Makes links in a frame's text clickable, with tooltips.
+-- Makes links in a frame's text clickable, with tooltips. Right-clicking a
+-- link opens the player/URL options, not the frame's own menu, so the frame
+-- is told a link was under the cursor when it handles its click.
 function TrialChatMessageList.EnableLinks(frame)
     frame:EnableMouse(true)
     frame:SetHyperlinksEnabled(true)
-    frame:SetScript("OnHyperlinkClick", onHyperlinkClick)
-    frame:SetScript("OnHyperlinkEnter", onHyperlinkEnter)
-    frame:SetScript("OnHyperlinkLeave", GameTooltip_Hide)
+    frame:SetScript("OnHyperlinkClick", function(self, link, text, button)
+        if button == "RightButton" then self.hyperlinkMenu = true end
+        onHyperlinkClick(self, link, text, button)
+    end)
+    frame:SetScript("OnHyperlinkEnter", function(self, link, text)
+        self.hoveredLink = true
+        onHyperlinkEnter(self, link, text)
+    end)
+    frame:SetScript("OnHyperlinkLeave", function(self)
+        self.hoveredLink = false
+        GameTooltip_Hide()
+    end)
 end
 
 local function createRowParts(row)
@@ -123,6 +145,29 @@ local function createRowParts(row)
     row.lineRight:SetHeight(1)
     row.lineRight:SetPoint("LEFT", row.label, "RIGHT", 10, 0)
     row.lineRight:SetPoint("RIGHT", row, "RIGHT", -RIGHT_PADDING, 0)
+
+    row.replyBar = UI.CreateLine(row)
+    row.replyBar:SetWidth(2)
+    row.replyBar:Hide()
+    row.reply = UI.CreateText(row, UI.Font.small, Color.muted)
+    row.reply:SetJustifyH("LEFT")
+    row.reply:SetJustifyV("TOP")
+    row.reply:SetWordWrap(true)
+    row.reply:SetNonSpaceWrap(true)
+    row.reply:Hide()
+
+    -- Right-click opens the message menu, unless a link was clicked.
+    row:RegisterForClicks("RightButtonUp")
+    row:SetScript("OnClick", function(self, button)
+        if button ~= "RightButton" then return end
+        if self.hyperlinkMenu or self.hoveredLink then
+            self.hyperlinkMenu = nil
+            return
+        end
+        local handler = self.list and self.list.state
+            and self.list.state.onMessageMenu
+        if handler and self.entry then handler(self.entry, self) end
+    end)
 end
 
 local function hideRowParts(row)
@@ -134,7 +179,10 @@ local function hideRowParts(row)
     row.label:Hide()
     row.lineLeft:Hide()
     row.lineRight:Hide()
+    row.replyBar:Hide()
+    row.reply:Hide()
     row.showsTimeOnHover = false
+    row.entry = nil
 end
 
 -- The text gets the width its row's height was measured for and grows down
@@ -147,7 +195,8 @@ local function placeText(row, element, left, top)
     row.text:SetWidth(math.max(1, width))
 end
 
-local function initializeRow(row, element)
+local function initializeRow(list, row, element)
+    row.list = list
     if not row.text then
         createRowParts(row)
     end
@@ -173,6 +222,8 @@ local function initializeRow(row, element)
     if kind == "message" then
         text:SetJustifyH("LEFT")
         UI.SetTextColor(text, Color.text)
+        row.entry = element.entry
+        local top
         if element.header then
             row.avatar.fullName = element.sender
             row.avatar:SetPerson(element.sender, element.color)
@@ -182,12 +233,30 @@ local function initializeRow(row, element)
             row.name:Show()
             row.time:SetText(element.time)
             row.time:Show()
-            placeText(row, element, TEXT_LEFT, -HEADER_TOP - NAME_HEIGHT)
+            top = -HEADER_TOP - NAME_HEIGHT
         else
-            placeText(row, element, TEXT_LEFT, -CONTINUATION_TOP)
+            top = -CONTINUATION_TOP
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
         end
+        if element.replyText then
+            local replyHeight = element.replyHeight or 0
+            row.replyBar:ClearAllPoints()
+            row.replyBar:SetPoint("TOPLEFT", row, "TOPLEFT", TEXT_LEFT, top)
+            row.replyBar:SetHeight(math.max(1, replyHeight))
+            UI.Tint(row.replyBar, element.replyColor or Color.muted, 0.85)
+            row.replyBar:Show()
+            row.reply:ClearAllPoints()
+            row.reply:SetPoint("TOPLEFT", row, "TOPLEFT",
+                TEXT_LEFT + REPLY_INDENT, top)
+            row.reply:SetWidth(math.max(1,
+                (element.measuredWidth or row:GetWidth())
+                - TEXT_LEFT - RIGHT_PADDING - REPLY_INDENT))
+            row.reply:SetText(element.replyText)
+            row.reply:Show()
+            top = top - replyHeight - REPLY_GAP
+        end
+        placeText(row, element, TEXT_LEFT, top)
         return
     end
 
@@ -226,7 +295,9 @@ function TrialChatMessageList.Create(parent)
 
     local view = CreateScrollBoxListLinearView(4, 14, 0, 0, 0)
     view:SetElementFactory(function(factory)
-        factory("Frame", initializeRow)
+        factory("Frame", function(row, element)
+            initializeRow(list, row, element)
+        end)
     end)
     view:SetElementExtentCalculator(function(_, element)
         return list:Measure(element)
@@ -291,13 +362,20 @@ function List:Measure(element)
     if kind == "day" or kind == "new" then
         height = DIVIDER_HEIGHT
     elseif kind == "message" then
-        local textHeight = self:MeasureText(element.text,
-            width - TEXT_LEFT - RIGHT_PADDING)
+        local textWidth = width - TEXT_LEFT - RIGHT_PADDING
+        local textHeight = self:MeasureText(element.text, textWidth)
+        local replyBlock = 0
+        if element.replyText then
+            element.replyHeight =
+                self:MeasureText(element.replyText, textWidth - REPLY_INDENT)
+            replyBlock = element.replyHeight + REPLY_GAP
+        end
         if element.header then
-            height = math.max(HEADER_TOP + NAME_HEIGHT + textHeight,
+            height = math.max(
+                HEADER_TOP + NAME_HEIGHT + replyBlock + textHeight,
                 HEADER_TOP + AVATAR_SIZE) + TEXT_BOTTOM
         else
-            height = CONTINUATION_TOP + textHeight + TEXT_BOTTOM
+            height = CONTINUATION_TOP + replyBlock + textHeight + TEXT_BOTTOM
         end
     elseif kind == "line" then
         height = self:MeasureText(element.text,
@@ -434,18 +512,25 @@ function List:AddEntry(elements, entry)
         }
         self.rowsByEntry[entry] = cached
     end
+    cached.entry = entry
+    if entry.reply then
+        cached.replyText = formatReply(entry.reply, state.colorFor)
+        cached.replyColor = state.colorFor({ sender = entry.reply.sender })
+    end
     elements[#elements + 1] = cached
     state.last = entry
 end
 
 -- options: format(entry) gives the message text, colorFor(entry) the name
--- color, firstUnread is the entry to put the "new" divider before, with
+-- color, onMessageMenu(entry, row) opens the message menu on right-click,
+-- firstUnread is the entry to put the "new" divider before, with
 -- unreadCount, keepPosition stays where the reader is, and emptyText is
 -- shown while there are no messages.
 function List:SetEntries(entries, options)
     self.state = {
         format = options.format or function(entry) return entry.message end,
         colorFor = options.colorFor or function() return Color.textSoft end,
+        onMessageMenu = options.onMessageMenu,
     }
     self.emptyText:SetText(options.emptyText or "")
 

@@ -38,6 +38,21 @@ local PILL_GAP = 6
 local GRIP_WIDTH = 18
 local ROW_GAP = 8
 local COMPOSER_HEIGHT = 38
+-- A reply shown above the message box: who and what is being answered.
+local REPLY_BAR_HEIGHT = 28
+
+-- The right-click menu, in this view's colors (dark pills on the world).
+local MENU_THEME = {
+    bg = Color.sidebar, bgAlpha = 0.96,
+    border = Color.white, borderAlpha = 0.16,
+    radius = 10,
+    hover = Color.white, hoverAlpha = 0.08,
+    text = Color.textSoft,
+    font = UI.Font.item,
+    itemHeight = 24,
+    padding = 5,
+    minWidth = 120,
+}
 -- Room between the panel's edge and what's in it.
 local PADDING = 10
 local PANEL_RADIUS = 13
@@ -53,6 +68,19 @@ View.__index = View
 
 local function clamp(value, low, high)
     return math.max(low, math.min(high, value))
+end
+
+local function colorForName(name)
+    return UI.ClassColor(TrialChatNearby:GetClass(name)) or Color.textSoft
+end
+
+-- The quoted part of a reply, muted, on a line of its own above the message.
+local function replyLine(reply, colorFor)
+    local sender = TrialChatCommon.ShortName(reply.sender or "?")
+    local text = TrialChatCommon.RemovePlayerLinks(reply.text or "")
+    return UI.ColorText(Color.muted, "> ")
+        .. UI.ColorText(colorFor({ sender = reply.sender }), sender)
+        .. UI.ColorText(Color.muted, ": " .. text)
 end
 
 -- The keybinding to reply with, when there is one.
@@ -318,6 +346,8 @@ function View:UpdateConversations()
     local x, row = left, 0
     local rowWidth = self.width - self.fullButton:GetWidth() - PILL_GAP
     local count = 0
+    -- A pending reply makes room for its own strip above the message box.
+    local replyHeight = self.reply and (REPLY_BAR_HEIGHT + ROW_GAP) or 0
     for index, conversation in ipairs(self.controller.GetConversations()) do
         count = index
         local pill = self.pills[index] or self:CreatePill()
@@ -334,15 +364,21 @@ function View:UpdateConversations()
         end
         pill:ClearAllPoints()
         pill:SetPoint("BOTTOMLEFT", self.composer, "TOPLEFT", x,
-            ROW_GAP + row * (PILL_HEIGHT + PILL_GAP))
+            ROW_GAP + replyHeight + row * (PILL_HEIGHT + PILL_GAP))
         pill:Show()
         x = x + width + PILL_GAP
     end
     for index = count + 1, #self.pills do
         self.pills[index]:Hide()
     end
-    self.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + ROW_GAP
+    self.chromeHeight = 2 * PADDING + COMPOSER_HEIGHT + replyHeight + ROW_GAP
         + (row + 1) * (PILL_HEIGHT + PILL_GAP) - PILL_GAP
+    if self.replyBar then
+        self.replyBar:ClearAllPoints()
+        self.replyBar:SetPoint("BOTTOMLEFT", self.composer, "TOPLEFT", 0, ROW_GAP)
+        self.replyBar:SetPoint("BOTTOMRIGHT", self.composer, "TOPRIGHT", 0, ROW_GAP)
+        self.replyBar:SetHeight(REPLY_BAR_HEIGHT)
+    end
     -- An invite goes between the conversations and the messages.
     local card = self.inviteCard
     card:SetShown(self.invite ~= nil)
@@ -359,6 +395,51 @@ end
 -- invite is { groupName, inviter }, or nil when there's none.
 function View:SetInvite(invite)
     self.invite = invite
+    self:UpdateConversations()
+end
+
+-- The strip above the message box that shows what a reply will answer.
+function View:CreateReplyBar()
+    local view = self
+    local bar = CreateFrame("Frame", nil, self.chrome)
+    bar.box = UI.CreateBox(bar, { radius = 10, border = true })
+    bar.box:SetColor(Color.sidebar, 0.9)
+    bar.box:SetBorderColor(Color.white, 0.18)
+    bar.accent = UI.CreateLine(bar)
+    bar.accent:SetWidth(2)
+    bar.accent:SetPoint("TOP", bar, "TOP", 0, -6)
+    bar.accent:SetPoint("BOTTOM", bar, "BOTTOM", 0, 6)
+    bar.accent:SetPoint("LEFT", bar, "LEFT", 11, 0)
+    bar.text = UI.CreateText(bar, UI.Font.small, Color.muted)
+    bar.text:SetPoint("LEFT", bar, "LEFT", 20, 0)
+    bar.text:SetPoint("RIGHT", bar, "RIGHT", -32, 0)
+    bar.text:SetJustifyH("LEFT")
+    bar.text:SetWordWrap(false)
+    bar.cancel = UI.CreateButton(bar, {
+        style = "ghost", icon = "close", iconSize = 10,
+        width = 22, height = 22,
+        onClick = function() view.controller.ClearReply() end,
+    })
+    bar.cancel:SetPoint("RIGHT", bar, "RIGHT", -5, 0)
+    bar:Hide()
+    return bar
+end
+
+-- reply is { sender, text }, or nil when nothing is being answered.
+function View:SetReply(reply)
+    self.reply = reply
+    if not self.replyBar then
+        self.replyBar = self:CreateReplyBar()
+    end
+    if reply then
+        local color = colorForName(reply.sender)
+        self.replyBar.text:SetText("Replying to "
+            .. UI.ColorText(color, TrialChatCommon.ShortName(reply.sender or "?"))
+            .. UI.ColorText(Color.muted, ": "
+                .. TrialChatCommon.RemovePlayerLinks(reply.text or "")))
+        UI.Tint(self.replyBar.accent, color, 0.9)
+    end
+    self.replyBar:SetShown(reply ~= nil)
     self:UpdateConversations()
 end
 
@@ -391,17 +472,24 @@ function View:MakeLine(entry, format, colorFor)
     if type(entry) ~= "table" then return nil end
 
     local name = TrialChatCommon.ShortName(entry.sender or "?")
+    local text
     if entry.isEmote then
-        return { entry = entry, text = name .. " " .. format(entry), color = Color.emote }
+        text = name .. " " .. format(entry)
+    else
+        text = UI.ColorText(colorFor(entry), name) .. ": " .. format(entry)
+    end
+    if entry.reply then
+        text = replyLine(entry.reply, colorFor) .. "\n" .. text
     end
     return {
         entry = entry,
-        text = UI.ColorText(colorFor(entry), name) .. ": " .. format(entry),
-        color = Color.text,
+        text = text,
+        color = entry.isEmote and Color.emote or Color.text,
     }
 end
 
 function View:CreateChip()
+    local view = self
     local chip = CreateFrame("Frame", nil, self.frame)
     chip.box = UI.CreateBox(chip, { radius = LINE_RADIUS, border = true })
     chip.box:SetColor(Color.sidebar, 0.85)
@@ -412,6 +500,20 @@ function View:CreateChip()
     chip.text:SetWordWrap(true)
     chip.text:SetNonSpaceWrap(true)
     TrialChatMessageList.EnableLinks(chip)
+    -- Right-click opens the message menu, unless a link was clicked.
+    chip:RegisterForClicks("RightButtonUp")
+    chip:SetScript("OnClick", function(self, button)
+        if button ~= "RightButton" then return end
+        if self.hyperlinkMenu or self.hoveredLink then
+            self.hyperlinkMenu = nil
+            return
+        end
+        -- Only real messages get a menu; notices and emotes don't.
+        local entry = self.line and self.line.entry
+        if type(entry) == "table" and not entry.isEmote then
+            view.controller.ShowMessageMenu(entry, MENU_THEME)
+        end
+    end)
     self:DragBy(chip)
     chip:SetFrameLevel(self.chrome:GetFrameLevel() + 5)
     chip:Hide()

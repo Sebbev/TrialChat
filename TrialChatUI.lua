@@ -720,3 +720,124 @@ function UI.CreateInviteCard(parent, onAnswer)
     card:Hide()
     return card
 end
+
+---------------------------------------------------------------------------
+-- Popup menus: the small list that opens where you click, like the menu a
+-- right-clicked message brings up. The view that opens one hands in its
+-- colors, so the menu matches the window or the minimal view it came from.
+---------------------------------------------------------------------------
+local POPUP_NAME = "TrialChatPopupMenu"
+local POPUP_LEVEL = 4999
+local POPUP_TEXT_INSET = 9
+local popup
+
+function UI.HidePopupMenu()
+    if popup then popup:Hide() end
+end
+
+local function createPopup()
+    local frame = CreateFrame("Frame", POPUP_NAME, UIParent)
+    frame:SetFrameStrata("FULLSCREEN_DIALOG")
+    frame:SetFrameLevel(POPUP_LEVEL)
+    frame:EnableMouse(true)
+    frame.box = UI.CreateBox(frame, { radius = 8, border = true })
+    frame.rows = {}
+
+    -- Any click outside the menu closes it.
+    local catcher = CreateFrame("Frame", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("FULLSCREEN_DIALOG")
+    catcher:SetFrameLevel(POPUP_LEVEL - 1)
+    catcher:EnableMouse(true)
+    catcher:SetScript("OnMouseDown", function() frame:Hide() end)
+    frame.catcher = catcher
+
+    frame:SetScript("OnHide", function() catcher:Hide() end)
+    frame:Hide()
+    tinsert(UISpecialFrames, POPUP_NAME)
+    return frame
+end
+
+local function ensureRow(frame, index, theme)
+    local row = frame.rows[index]
+    if not row then
+        row = CreateFrame("Button", nil, frame)
+        row.box = UI.CreateBox(row, { radius = 6 })
+        row.text = UI.CreateText(row, theme.font or UI.Font.item,
+            theme.text or Color.textSoft)
+        row.text:SetPoint("LEFT", row, "LEFT", POPUP_TEXT_INSET, 0)
+        row.text:SetPoint("RIGHT", row, "RIGHT", -POPUP_TEXT_INSET, 0)
+        row.text:SetJustifyH("LEFT")
+        row:SetScript("OnEnter", function(self) self.box:Show() end)
+        row:SetScript("OnLeave", function(self) self.box:Hide() end)
+        row:SetScript("OnClick", function(self)
+            local action = self.action
+            UI.HidePopupMenu()
+            if action then action() end
+        end)
+        frame.rows[index] = row
+    end
+    -- Restyled every time: one menu is shared by views with their own colors.
+    row.box:SetColor(theme.hover or Color.hover, theme.hoverAlpha or 1)
+    UI.SetTextColor(row.text, theme.text or Color.textSoft)
+    if theme.font then row.text:SetFontObject(theme.font) end
+    row.box:Hide()
+    return row
+end
+
+-- items: a list of { text = ..., onClick = ... }, in order from the top.
+function UI.ShowPopupMenu(theme, items)
+    if not items or #items == 0 then return end
+
+    local frame = popup or createPopup()
+    popup = frame
+    frame.box:SetColor(theme.bg or Color.window, theme.bgAlpha or 1)
+    frame.box:SetBorderColor(theme.border or Color.outline,
+        theme.borderAlpha or 1)
+
+    local itemHeight = theme.itemHeight or 24
+    local padding = theme.padding or 5
+    local textWidth = 0
+    for index, item in ipairs(items) do
+        local row = ensureRow(frame, index, theme)
+        row.text:SetText(item.text)
+        row.action = item.onClick
+        row:Show()
+        textWidth = math.max(textWidth, row.text:GetStringWidth())
+    end
+    for index = #items + 1, #frame.rows do
+        frame.rows[index]:Hide()
+    end
+
+    local width = textWidth + 2 * (POPUP_TEXT_INSET + padding)
+    width = math.max(width, theme.minWidth or 0)
+    frame:SetSize(width, #items * itemHeight + 2 * padding)
+    for index = 1, #items do
+        local row = frame.rows[index]
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", frame, "TOPLEFT", padding,
+            -(padding + (index - 1) * itemHeight))
+        row:SetSize(width - 2 * padding, itemHeight)
+    end
+
+    -- Open where the cursor is, then nudge it back onto the screen.
+    local scale = frame:GetEffectiveScale()
+    local cursorX, cursorY = GetCursorPosition()
+    local uiLeft, uiBottom = UIParent:GetLeft() or 0, UIParent:GetBottom() or 0
+    local uiWidth, uiHeight = UIParent:GetWidth(), UIParent:GetHeight()
+    local left = cursorX / scale + 4
+    local bottom = cursorY / scale - 4 - frame:GetHeight()
+    if left + frame:GetWidth() > uiLeft + uiWidth then
+        left = uiLeft + uiWidth - frame:GetWidth()
+    end
+    if left < uiLeft then left = uiLeft end
+    if bottom + frame:GetHeight() > uiBottom + uiHeight then
+        bottom = uiBottom + uiHeight - frame:GetHeight()
+    end
+    if bottom < uiBottom then bottom = uiBottom end
+
+    frame:ClearAllPoints()
+    frame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
+    frame:Show()
+    frame.catcher:Show()
+end

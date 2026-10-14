@@ -17,6 +17,21 @@ local MEMBERS_WIDTH = 180
 local HEADER_HEIGHT = 60
 local COMPOSER_HEIGHT = 64
 local INVITE_MARGIN = 20
+-- The strip above the message box that shows what a reply will answer.
+local REPLY_BAR_HEIGHT = 32
+local REPLY_BAR_GAP = 6
+-- The right-click menu on a message, in this window's colors.
+local WINDOW_MENU_THEME = {
+    bg = Color.window, bgAlpha = 0.98,
+    border = Color.outline, borderAlpha = 1,
+    radius = 8,
+    hover = Color.hover, hoverAlpha = 1,
+    text = Color.textSoft,
+    font = UI.Font.item,
+    itemHeight = 24,
+    padding = 5,
+    minWidth = 130,
+}
 local CONVERSATION_ROW_HEIGHT = 40
 local MEMBER_ROW_HEIGHT = 26
 local MEMBER_LABEL_HEIGHT = 30
@@ -41,6 +56,7 @@ local conversationList
 local memberList
 local messageList
 local inviteCard
+local replyBar
 local searchField
 local addListenerField
 local header = {}
@@ -51,6 +67,13 @@ local nearbyUnread = 0
 local lastMessageAt
 local refreshPending = {}
 local selectConversation
+-- The message a new message will answer, or nil. Kept in one place so both
+-- views show the same pending reply.
+local pendingReply
+-- Lays the message box area out again; set once the window exists.
+local updateComposerArea
+-- Opens the right-click menu on a message; set with the reply handling.
+local showMessageMenu
 
 local function getSettings()
     TrialChatDB = TrialChatDB or {}
@@ -203,6 +226,9 @@ local function renderMessages(options)
     messageList:SetEntries(entries, {
         format = format,
         colorFor = colorForEntry,
+        onMessageMenu = function(entry)
+            showMessageMenu(entry, WINDOW_MENU_THEME)
+        end,
         firstUnread = options.firstUnread,
         unreadCount = options.unreadCount,
         keepPosition = options.keepPosition,
@@ -304,21 +330,65 @@ local function updateComposer()
     updateCounter()
 end
 
-local function sendToConversation(message)
+local function sendToConversation(message, reply)
     if strtrim(message or "") == "" then return end
     if isNearby(selected) then
-        Nearby:Send(message)
+        Nearby:Send(message, reply)
     else
-        Groups:SendMessage(selected, message)
+        Groups:SendMessage(selected, message, reply)
     end
+end
+
+-- Remembers the message a new message will answer, and shows it in both
+-- views.
+local function setReply(entry)
+    pendingReply = entry and { sender = entry.sender, text = entry.message }
+        or nil
+    if minimal then
+        minimal:SetReply(pendingReply)
+    end
+    if updateComposerArea then updateComposerArea() end
+end
+
+local function clearReply()
+    setReply(nil)
+end
+
+-- The reply is taken once, by the message that uses it.
+local function takePendingReply()
+    local reply = pendingReply
+    if reply then
+        clearReply()
+    end
+    return reply
+end
+
+-- Copy text puts the message in a selectable box, since addons can't write
+-- to the clipboard directly.
+local function copyEntryText(entry)
+    TrialChatCommon.ShowCopyDialog(
+        TrialChatCommon.RemovePlayerLinks(entry.message or ""))
+end
+
+-- theme lets each view open the menu in its own colors.
+showMessageMenu = function(entry, theme)
+    UI.ShowPopupMenu(theme or WINDOW_MENU_THEME, {
+        { text = "Reply", onClick = function() setReply(entry) end },
+        { text = "Copy text", onClick = function() copyEntryText(entry) end },
+    })
 end
 
 local function sendComposerMessage()
     local input = composer.input
     local message = input:GetText()
     input:SetText("")
-    sendToConversation(message)
+    sendToConversation(message, takePendingReply())
     input:SetFocus()
+end
+
+-- The minimal view sends here too, so it answers the same message.
+local function sendWithReply(message)
+    sendToConversation(message, takePendingReply())
 end
 
 local function showEmoteMenu(owner)
@@ -748,6 +818,10 @@ selectConversation = function(key)
     if not isNearby(key) and not Groups:GetInfo(key) then
         key = NEARBY
     end
+    -- A reply answers a message in the conversation it came from.
+    if pendingReply and key ~= selected then
+        clearReply()
+    end
     selected = key
 
     local firstUnread, unreadCount
@@ -821,7 +895,9 @@ local function ensureMinimal()
         GetEntries = getEntries,
         GetName = function() return getConversationName(selected) end,
         GetMessageLimit = getMessageLimit,
-        Send = sendToConversation,
+        Send = sendWithReply,
+        ClearReply = clearReply,
+        ShowMessageMenu = showMessageMenu,
         ShowFullView = function() setMode("full", true) end,
         GetSettings = getSettings,
         AnswerInvite = function(join) Groups:AnswerInvite(join) end,
@@ -834,6 +910,7 @@ local function ensureMinimal()
     })
     minimal:Refresh()
     minimal:SetInvite(Groups:GetInvite())
+    minimal:SetReply(pendingReply)
     return minimal
 end
 
@@ -1053,6 +1130,30 @@ local function createComposer()
     input:HookScript("OnTextChanged", updateCounter)
     input:HookScript("OnEditFocusGained", updateAlpha)
     input:HookScript("OnEditFocusLost", updateAlpha)
+
+    -- The reply strip sits between the messages and the message box.
+    replyBar = CreateFrame("Frame", nil, main)
+    replyBar:SetHeight(REPLY_BAR_HEIGHT)
+    replyBar.box = UI.CreateBox(replyBar, { radius = 10, border = true })
+    replyBar.box:SetColor(Color.sidebar, 0.92)
+    replyBar.box:SetBorderColor(Color.outline, 1)
+    replyBar.accent = UI.CreateLine(replyBar)
+    replyBar.accent:SetWidth(2)
+    replyBar.accent:SetPoint("TOP", replyBar, "TOP", 0, -7)
+    replyBar.accent:SetPoint("BOTTOM", replyBar, "BOTTOM", 0, 7)
+    replyBar.accent:SetPoint("LEFT", replyBar, "LEFT", 12, 0)
+    replyBar.text = UI.CreateText(replyBar, UI.Font.small, Color.muted)
+    replyBar.text:SetPoint("LEFT", replyBar, "LEFT", 22, 0)
+    replyBar.text:SetPoint("RIGHT", replyBar, "RIGHT", -40, 0)
+    replyBar.text:SetJustifyH("LEFT")
+    replyBar.text:SetWordWrap(false)
+    replyBar.cancel = UI.CreateButton(replyBar, {
+        style = "ghost", icon = "close", iconSize = 11,
+        width = 24, height = 24,
+        onClick = clearReply,
+    })
+    replyBar.cancel:SetPoint("RIGHT", replyBar, "RIGHT", -6, 0)
+    replyBar:Hide()
 end
 
 local function createMembersPanel()
@@ -1104,8 +1205,9 @@ local function createMembersPanel()
 end
 
 -- An invite to a group shows above the message box in both views, and
--- the messages make room for it.
-local function updateInvite()
+-- the messages make room for it. A pending reply does the same, right
+-- above the message box.
+updateComposerArea = function()
     local invite = Groups:GetInvite()
     if minimal then
         minimal:SetInvite(invite)
@@ -1114,8 +1216,32 @@ local function updateInvite()
 
     local atBottom = messageList:IsAtBottom()
     local bottom = COMPOSER_HEIGHT
+    if replyBar then
+        local hasReply = pendingReply ~= nil
+        replyBar:SetShown(hasReply)
+        if hasReply then
+            if not replyBar.anchored then
+                replyBar:SetPoint("BOTTOMLEFT", main, "BOTTOMLEFT",
+                    INVITE_MARGIN, COMPOSER_HEIGHT)
+                replyBar:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT",
+                    -INVITE_MARGIN, COMPOSER_HEIGHT)
+                replyBar.anchored = true
+            end
+            local color = colorForName(pendingReply.sender)
+            replyBar.text:SetText("Replying to "
+                .. UI.ColorText(color,
+                    TrialChatCommon.ShortName(pendingReply.sender or "?"))
+                .. UI.ColorText(Color.muted, ": "
+                    .. TrialChatCommon.RemovePlayerLinks(pendingReply.text or "")))
+            UI.Tint(replyBar.accent, color, 0.9)
+            bottom = bottom + REPLY_BAR_HEIGHT + REPLY_BAR_GAP
+        end
+    end
     if invite then
-        bottom = bottom + inviteCard:SetInvite(invite, main:GetWidth() - 2 * INVITE_MARGIN) + 6
+        inviteCard:SetPoint("BOTTOMLEFT", main, "BOTTOMLEFT", INVITE_MARGIN, bottom)
+        bottom = bottom
+            + inviteCard:SetInvite(invite, main:GetWidth() - 2 * INVITE_MARGIN)
+            + REPLY_BAR_GAP
     end
     inviteCard:SetShown(invite ~= nil)
     updateAlpha()
@@ -1178,8 +1304,8 @@ local function createWindow()
     inviteCard:SetPoint("BOTTOMLEFT", main, "BOTTOMLEFT", INVITE_MARGIN, COMPOSER_HEIGHT)
     inviteCard:SetFrameLevel(messageList.scrollBox:GetFrameLevel() + 110)
     main:SetScript("OnSizeChanged", function()
-        if inviteCard:IsShown() then
-            updateInvite()
+        if inviteCard:IsShown() or (replyBar and replyBar:IsShown()) then
+            updateComposerArea()
         end
     end)
 
@@ -1211,6 +1337,7 @@ local function createWindow()
 
     window:Hide()
     selectConversation(NEARBY)
+    updateComposerArea()
     if inMinimalMode() then
         ensureMinimal()
     end
@@ -1264,7 +1391,7 @@ local function onGroupsChange(kind, id, entry, appended)
         if Groups:GetInvite() then
             Messenger:Open(false)
         end
-        updateInvite()
+        updateComposerArea()
         return
     end
     if kind == "open" then
@@ -1332,6 +1459,7 @@ function Messenger:Open(focusInput)
     if focusInput then
         composer.input:SetFocus()
     end
+    updateComposerArea()
     updateAlpha()
 end
 

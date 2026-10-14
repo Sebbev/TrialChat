@@ -406,6 +406,49 @@ function TrialChatCommon.DecodeMessageMarkup(text)
     end))
 end
 
+-- A reply carries a little of the message it answers with it, so other
+-- TrialChat users can see what is being replied to. It rides at the front
+-- of the message's encoded text as "R|" who "|" what "|" and then the
+-- message. Encoding never leaves a plain "|" in encoded text, so those
+-- separators can never be confused with something the sender typed.
+-- Readers on an older TrialChat simply see the quote as plain text.
+local REPLY_MARKER = "R|"
+local REPLY_QUOTE_LIMIT = 140
+
+-- Quoted replies are trimmed, so a reply stays small on the wire.
+function TrialChatCommon.ReplyQuoteText(text)
+    text = string.match(text or "", "^%s*(.-)%s*$") or ""
+    if #text > REPLY_QUOTE_LIMIT then
+        return string.sub(text, 1, REPLY_QUOTE_LIMIT) .. "..."
+    end
+    return text
+end
+
+-- Encodes a reply ({ sender, text }) to go in front of a message.
+function TrialChatCommon.EncodeReplyPrefix(reply)
+    if not reply or (reply.sender or "") == "" then return "" end
+    return REPLY_MARKER
+        .. TrialChatCommon.EncodeMessageMarkup(reply.sender or "")
+        .. "|" .. TrialChatCommon.EncodeMessageMarkup(
+            TrialChatCommon.ReplyQuoteText(reply.text))
+        .. "|"
+end
+
+-- Takes a reply off the front of encoded message text. Returns the reply
+-- (or nil), and the rest of the text, still encoded.
+function TrialChatCommon.SplitReplyPrefix(text)
+    if string.sub(text, 1, #REPLY_MARKER) ~= REPLY_MARKER then
+        return nil, text
+    end
+    local sender, quoted, rest =
+        string.match(text, "^R|([^|]*)|([^|]*)|(.*)$")
+    if not sender then return nil, text end
+    return {
+        sender = TrialChatCommon.DecodeMessageMarkup(sender),
+        text = TrialChatCommon.DecodeMessageMarkup(quoted),
+    }, rest
+end
+
 -- Messages longer than one addon message (255 bytes) are sent in numbered
 -- parts and put back together by the receiver.
 local MAX_MESSAGE_PARTS = 16
@@ -591,21 +634,23 @@ function TrialChatCommon.FormatMessageText(text)
     return table.concat(result)
 end
 
-local urlDialog
+local copyDialog
 
-local function showURLCopyDialog(url)
-    if not urlDialog then
-        urlDialog = CreateFrame("Frame", "TrialChatURLDialog", UIParent, "BackdropTemplate")
-        urlDialog:SetSize(460, 130)
-        urlDialog:SetPoint("CENTER")
-        urlDialog:SetFrameStrata("DIALOG")
-        urlDialog:SetFrameLevel(200)
-        urlDialog:SetMovable(true)
-        urlDialog:EnableMouse(true)
-        urlDialog:RegisterForDrag("LeftButton")
-        urlDialog:SetScript("OnDragStart", urlDialog.StartMoving)
-        urlDialog:SetScript("OnDragStop", urlDialog.StopMovingOrSizing)
-        urlDialog:SetBackdrop({
+-- WoW addons can't write to the clipboard, so copying shows the text in a
+-- box that is already selected: the player presses Ctrl+C.
+local function showCopyDialog(text, title, instructions)
+    if not copyDialog then
+        copyDialog = CreateFrame("Frame", "TrialChatURLDialog", UIParent, "BackdropTemplate")
+        copyDialog:SetSize(460, 130)
+        copyDialog:SetPoint("CENTER")
+        copyDialog:SetFrameStrata("DIALOG")
+        copyDialog:SetFrameLevel(200)
+        copyDialog:SetMovable(true)
+        copyDialog:EnableMouse(true)
+        copyDialog:RegisterForDrag("LeftButton")
+        copyDialog:SetScript("OnDragStart", copyDialog.StartMoving)
+        copyDialog:SetScript("OnDragStop", copyDialog.StopMovingOrSizing)
+        copyDialog:SetBackdrop({
             bgFile = "Interface/Tooltips/UI-Tooltip-Background",
             edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
             tile = true,
@@ -613,37 +658,51 @@ local function showURLCopyDialog(url)
             edgeSize = 16,
             insets = { left = 4, right = 4, top = 4, bottom = 4 },
         })
-        urlDialog:SetBackdropColor(0.04, 0.04, 0.04, 0.95)
+        copyDialog:SetBackdropColor(0.04, 0.04, 0.04, 0.95)
 
-        local title = urlDialog:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        title:SetPoint("TOP", urlDialog, "TOP", 0, -14)
-        title:SetText("Copy this URL")
+        copyDialog.title = copyDialog:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        copyDialog.title:SetPoint("TOP", copyDialog, "TOP", 0, -14)
 
-        local instructions = urlDialog:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        instructions:SetPoint("TOP", title, "BOTTOM", 0, -8)
-        instructions:SetText("WoW does not allow addons to open arbitrary websites. Press Ctrl+C to copy.")
+        copyDialog.instructions =
+            copyDialog:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        copyDialog.instructions:SetPoint("TOP", copyDialog.title, "BOTTOM", 0, -8)
+        copyDialog.instructions:SetWidth(424)
+        copyDialog.instructions:SetJustifyH("CENTER")
 
-        urlDialog.input = CreateFrame("EditBox", nil, urlDialog, "InputBoxTemplate")
-        urlDialog.input:SetPoint("TOPLEFT", urlDialog, "TOPLEFT", 18, -62)
-        urlDialog.input:SetPoint("RIGHT", urlDialog, "RIGHT", -18, 0)
-        urlDialog.input:SetHeight(24)
-        urlDialog.input:SetAutoFocus(false)
-        urlDialog.input:SetMaxLetters(2048)
+        copyDialog.input = CreateFrame("EditBox", nil, copyDialog, "InputBoxTemplate")
+        copyDialog.input:SetPoint("TOPLEFT", copyDialog, "TOPLEFT", 18, -62)
+        copyDialog.input:SetPoint("RIGHT", copyDialog, "RIGHT", -18, 0)
+        copyDialog.input:SetHeight(24)
+        copyDialog.input:SetAutoFocus(false)
+        copyDialog.input:SetMaxLetters(2048)
 
-        local closeButton = CreateFrame("Button", nil, urlDialog, "UIPanelButtonTemplate")
+        local closeButton = CreateFrame("Button", nil, copyDialog, "UIPanelButtonTemplate")
         closeButton:SetSize(70, 22)
-        closeButton:SetPoint("BOTTOM", urlDialog, "BOTTOM", 0, 10)
+        closeButton:SetPoint("BOTTOM", copyDialog, "BOTTOM", 0, 10)
         closeButton:SetText(CLOSE)
         closeButton:SetScript("OnClick", function()
-            urlDialog:Hide()
+            copyDialog:Hide()
         end)
-        urlDialog:Hide()
+        copyDialog:Hide()
     end
 
-    urlDialog.input:SetText(url)
-    urlDialog:Show()
-    urlDialog.input:SetFocus()
-    urlDialog.input:HighlightText()
+    copyDialog.title:SetText(title or "Copy")
+    copyDialog.instructions:SetText(instructions
+        or "Press Ctrl+C to copy.")
+    copyDialog.input:SetText(text)
+    copyDialog:Show()
+    copyDialog.input:SetFocus()
+    copyDialog.input:HighlightText()
+end
+
+function TrialChatCommon.ShowCopyDialog(text, title)
+    if not text or text == "" then return end
+    showCopyDialog(text, title or "Copy text", "Press Ctrl+C to copy.")
+end
+
+local function showURLCopyDialog(url)
+    showCopyDialog(url, "Copy this URL",
+        "WoW does not allow addons to open arbitrary websites. Press Ctrl+C to copy.")
 end
 
 function TrialChatCommon.HandleHyperlinkClick(link, text, button)
