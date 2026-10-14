@@ -279,6 +279,13 @@ local function showMinimapTooltip(button)
         GameTooltip:AddLine(unread .. " unread group message"
             .. (unread == 1 and "" or "s") .. ".", 1, 0.49, 0.04)
     end
+    TrialChatDB = TrialChatDB or {}
+    if TrialChatDB.echoToSay then
+        GameTooltip:AddLine("Echo to Say (/s): ON", 0, 1, 0)
+    else
+        GameTooltip:AddLine("Echo to Say (/s): OFF", 0.7, 0.7, 0.7)
+    end
+    GameTooltip:AddLine("Right-click for options.", 0.7, 0.7, 0.7)
     GameTooltip:AddLine("Drag to move this button.", 0.7, 0.7, 0.7)
     GameTooltip:Show()
 end
@@ -336,10 +343,19 @@ local function createMinimapButton()
     border:SetPoint("TOPLEFT", minimapButton, "TOPLEFT", 0, 0)
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 
-    minimapButton:SetScript("OnClick", function()
+    minimapButton:SetScript("OnClick", function(self, mouseButton)
+        if mouseButton == "RightButton" then
+            MenuUtil.CreateContextMenu(self, function(_, root)
+                root:CreateTitle("TrialChat")
+                root:CreateButton("Options", function()
+                    TrialChatOptions:Toggle()
+                end)
+            end)
+            return
+        end
         TrialChatMessenger:Toggle()
-        if GameTooltip:GetOwner() == minimapButton then
-            showMinimapTooltip(minimapButton)
+        if GameTooltip:GetOwner() == self then
+            showMinimapTooltip(self)
         end
     end)
     minimapButton:SetScript("OnLeave", GameTooltip_Hide)
@@ -592,8 +608,18 @@ sendTrialChatMessage = function(msg)
     end
 
     addNearbyMessage(fullPlayerName or playerName, msg, isEmote)
+    -- With "echo to say" on, normal (non-emote) messages also go out as
+    -- regular /say, so nearby players without TrialChat can read them. The
+    -- game then draws its own bubble over us, so don't draw a TrialChat one
+    -- as well. Emotes are already announced by PerformEmote, so they aren't
+    -- echoed.
+    TrialChatDB = TrialChatDB or {}
     if not isEmote then
-        TrialChatBubbles.ShowOwnMessage(msg)
+        if TrialChatDB.echoToSay then
+            SendChatMessage(msg, "SAY")
+        else
+            TrialChatBubbles.ShowOwnMessage(msg)
+        end
     end
     if not sentToGroup and sentWhisperCount == 0 then
         showTrialChatNotice(

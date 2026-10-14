@@ -26,6 +26,13 @@ local bubblesByPlate = {}
 local bubblesByUnit = {}
 local ownBubble
 
+-- Nearby bubbles we've drawn, by sender, and recent /say messages, so a
+-- message that arrives both as a TrialChat message and as a /say (when the
+-- sender has "echo to say" on) only produces one bubble.
+local nearbyBubbleBySender = {}
+local recentSays = {}
+local SAY_DEDUP_SECONDS = 2
+
 local function isBubblesEnabled()
     return not (TrialChatDB and TrialChatDB.chatBubbles == false)
 end
@@ -91,6 +98,55 @@ local function hideBubble(bubble)
     bubble:Hide()
     if bubble.unit and bubblesByUnit[bubble.unit] == bubble then
         bubblesByUnit[bubble.unit] = nil
+    end
+end
+
+-- Whether the game itself shows chat bubbles; only then does a /say produce
+-- a bubble of its own. If it doesn't, the TrialChat bubble is the only one
+-- and hiding it would leave the speaker with no bubble at all.
+local function blizzardBubblesShown()
+    return GetCVar ~= nil and GetCVar("chatBubbles") == "1"
+end
+
+-- The text a bubble shows for a message, used to tell whether a TrialChat
+-- message and a /say are the same one.
+local function bubbleText(message)
+    local text = strtrim(toPlainText(message))
+    if text == "" then return "" end
+    return shortenForBubble(text)
+end
+
+local function sayKey(sender, text)
+    return TrialChatCommon.NormalizeCharacterName(sender) .. "\0" .. (text or "")
+end
+
+local function wasRecentlySaid(sender, text)
+    local at = recentSays[sayKey(sender, text)]
+    return at ~= nil and GetTime() - at <= SAY_DEDUP_SECONDS
+end
+
+-- A /say came in: remember it so a TrialChat bubble for the same message is
+-- skipped, and drop one already shown for it (the game draws its own).
+local function onSaySpoken(sender, message)
+    if not sender or not message or TrialChatCommon.IsSelf(sender) then return end
+    if not blizzardBubblesShown() then return end
+
+    local text = bubbleText(message)
+    if text == "" then return end
+
+    local key = sayKey(sender, text)
+    recentSays[key] = GetTime()
+    C_Timer.After(SAY_DEDUP_SECONDS, function()
+        if recentSays[key] and GetTime() - recentSays[key] >= SAY_DEDUP_SECONDS then
+            recentSays[key] = nil
+        end
+    end)
+
+    local senderKey = TrialChatCommon.NormalizeCharacterName(sender)
+    local record = nearbyBubbleBySender[senderKey]
+    if record and record.text == text then
+        nearbyBubbleBySender[senderKey] = nil
+        hideBubble(record.bubble)
     end
 end
 
@@ -164,9 +220,15 @@ function TrialChatBubbles.ShowMessage(sender, message, groupName)
     if not isBubblesEnabled() or not sender or not message then return end
     if groupName and not isGroupBubblesEnabled() then return end
 
-    local text = strtrim(toPlainText(message))
+    local text = bubbleText(message)
     if text == "" then return end
-    text = shortenForBubble(text)
+
+    -- The message may also be arriving as a /say the game will bubble itself;
+    -- skip ours so it isn't shown twice.
+    local isNearby = not groupName
+    if isNearby and blizzardBubblesShown() and wasRecentlySaid(sender, text) then
+        return
+    end
 
     local unit = findNamePlateUnit(sender)
     local plate = unit and C_NamePlate.GetNamePlateForUnit(unit)
@@ -185,6 +247,19 @@ function TrialChatBubbles.ShowMessage(sender, message, groupName)
     bubblesByUnit[unit] = bubble
 
     showBubble(bubble, text, groupName)
+
+    -- Remember it, so a /say for the same message arriving just after can
+    -- take over (the game's bubble sits on the speaker's real position).
+    if isNearby then
+        local senderKey = TrialChatCommon.NormalizeCharacterName(sender)
+        local record = { bubble = bubble, text = text, at = GetTime() }
+        nearbyBubbleBySender[senderKey] = record
+        C_Timer.After(SAY_DEDUP_SECONDS, function()
+            if nearbyBubbleBySender[senderKey] == record then
+                nearbyBubbleBySender[senderKey] = nil
+            end
+        end)
+    end
 end
 
 -- Your own character has no nameplate and addons can't ask where it is on
@@ -225,7 +300,14 @@ end
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
-eventFrame:SetScript("OnEvent", function(_, _, unit)
+eventFrame:RegisterEvent("CHAT_MSG_SAY")
+eventFrame:SetScript("OnEvent", function(_, event, ...)
+    if event == "CHAT_MSG_SAY" then
+        local message, sender = ...
+        onSaySpoken(sender, message)
+        return
+    end
+    local unit = ...
     local bubble = bubblesByUnit[unit]
     if bubble then
         hideBubble(bubble)
