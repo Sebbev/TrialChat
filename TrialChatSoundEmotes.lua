@@ -88,4 +88,5 @@ TrialChatCommon.SoundEmoteDurations = {
     ["run.mp3"] = 8.28,
     ["yrunning.mp3"] = 1.65,
     ["meow.mp3"] = 0.85,
+    ["pickle.mp3"] = 1.96,
 }
