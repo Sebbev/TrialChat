@@ -16,6 +16,7 @@ TrialChatCommon.TargetedEmoteDescriptions = {
     airguitar = "serenades [playername] on an invisible guitar with outrageous enthusiasm.",
     airhug = "offers [playername] an imaginary hug, complete with imaginary arms.",
     airquote = "makes exaggerated air quotes at [playername] with both hands.",
+    reload = "is reloading their revolver... with a new updated version of the addon... you should do the same!",
     allow = "grants [playername] the honor of witnessing one more snack. A generous ruler.",
     amaze = "tries to amaze [playername], staring wide-eyed as if the trick surprised them too. Wow!",
     angry = "raises a fist at [playername] in a burst of anger.",

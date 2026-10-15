@@ -811,6 +811,76 @@ function TrialChatCommon.AddOwnSongLinkOwner(text)
     return setSongLinkOwner(text, playerFullName)
 end
 
+-- Sound emote audio lives in Media/SoundEmotes. TrialChatSoundEmotes.lua maps
+-- a sound emote's name to its file there; names missing from the map fall back
+-- to "<name>.mp3", so dropping a correctly named file is enough on its own.
+local SOUND_EMOTE_DIRECTORY =
+    "Interface\\AddOns\\TrialChat\\Media\\SoundEmotes\\"
+
+-- The game's sound API has no volume control, so to make sound emotes louder
+-- the same file is played on every channel listed here at once. The mixer sums
+-- them, which makes it noticeably louder than a single channel. Add or remove
+-- channels to taste ("SFX", "Dialog", "Ambience", "Music"); each extra channel
+-- is louder but can also clip an already-loud file.
+TrialChatCommon.SoundEmoteChannels = { "Master", "SFX", "Dialog" }
+
+function TrialChatCommon.GetSoundEmoteFile(name)
+    local files = TrialChatCommon.SoundEmotes
+    local file = files and files[name]
+    if file and file ~= "" then
+        return file
+    end
+    return name .. ".mp3"
+end
+
+-- Plays a sound emote's audio file. A missing file quietly does not play.
+function TrialChatCommon.PlaySoundEmote(name)
+    if not name or name == "" or not PlaySoundFile then
+        return false
+    end
+    local path = SOUND_EMOTE_DIRECTORY .. TrialChatCommon.GetSoundEmoteFile(name)
+    local channels = TrialChatCommon.SoundEmoteChannels or { "Master" }
+    local played = false
+    for _, channel in ipairs(channels) do
+        if PlaySoundFile(path, channel) then
+            played = true
+        end
+    end
+    return played
+end
+
+-- Handles the "//name [target]" sound emote syntax used instead of "/name".
+-- Returns nil when the message is not a sound emote. Otherwise returns true
+-- plus, for a sound emote that is also a normal emote, the emote message to
+-- send ("/name target"); the second value is nil for a sound-only emote (then
+-- only the sound plays). The third value says whether a file actually played.
+function TrialChatCommon.ParseSoundEmote(message)
+    local name, argument = string.match(message, "^//%s*([%w_]+)%s*(.-)%s*$")
+    if not name then
+        -- A bare "//" is not a usable sound emote, but consume it so it is
+        -- never sent as a literal chat message.
+        if string.sub(message, 1, 2) == "//" then
+            return true, nil, false
+        end
+        return nil
+    end
+    name = string.lower(name)
+
+    local played = TrialChatCommon.PlaySoundEmote(name)
+
+    -- A sound emote that is also a normal emote sends that emote as well, so
+    -- everyone else sees it. Otherwise only the sound plays, locally.
+    if TrialChatCommon.EmoteDescriptions[name] then
+        local emote = "/" .. name
+        if argument ~= "" then
+            emote = emote .. " " .. argument
+        end
+        return true, emote, played
+    end
+
+    return true, nil, played
+end
+
 function TrialChatCommon.ParseEmote(message)
     message = TrialChatCommon.NormalizeMessageMarkup(message)
     local command, argument = string.match(message, "^/([%a]+)%s*(.-)%s*$")
@@ -847,12 +917,90 @@ function TrialChatCommon.ParseEmote(message)
 
     local token = _G.hash_EmoteTokenList
         and _G.hash_EmoteTokenList["/" .. string.upper(command)]
-    return description, true, token, target ~= "" and target or nil
+    -- Pass a name to the emote only when one was actually typed. With no name,
+    -- leave the target out so the game aims the emote at whatever you have
+    -- selected: a name (or unit token) is not honoured for NPCs, but omitting
+    -- it targets them, and players, correctly.
+    return description, true, token, argument ~= "" and argument or nil
 end
 
 function TrialChatCommon.PerformEmote(token, target)
     if not token then return end
-    C_ChatInfo.PerformEmote(token, target)
+    -- A unit name/token is not honoured for NPC targets, so only pass one when
+    -- the player actually typed it. With no name, leave the argument off
+    -- entirely (do not pass nil) so the game aims the emote at whatever is
+    -- currently selected, which is the form that works for NPCs and players.
+    if target and target ~= "" then
+        C_ChatInfo.PerformEmote(token, target)
+    else
+        C_ChatInfo.PerformEmote(token)
+    end
+end
+
+---------------------------------------------------------------------------
+-- Group icons
+--
+-- A group's icon is one of the icons macros have, chosen by the group's
+-- creator and shared with the members, like the group's name. It's stored as
+-- the icon list's own entry: a file ID as digits, or an icon name.
+---------------------------------------------------------------------------
+
+-- The icons macros have, from the same API the macro icon picker builds its
+-- grid from: the loose icons, then every spell and item icon. Cached, as the
+-- lists don't change while the game runs.
+local macroIconList
+
+-- Turns a stored icon into something SetTexture understands.
+function TrialChatCommon.GetIconTexture(icon)
+    if type(icon) == "number" then return icon end
+    if type(icon) ~= "string" or icon == "" then return nil end
+    local fileID = tonumber(icon)
+    if fileID then return fileID end
+    if string.find(icon, "\\", 1, true) then return icon end
+    return "Interface\\Icons\\" .. icon
+end
+
+function TrialChatCommon.GetMacroIconList()
+    if macroIconList then return macroIconList end
+
+    local icons, seen = {}, {}
+    local function addAll(list)
+        for index = 1, #list do
+            local icon = list[index]
+            if icon ~= nil then
+                local key = tostring(icon)
+                if key ~= "" and not seen[key] then
+                    seen[key] = true
+                    icons[#icons + 1] = key
+                end
+            end
+        end
+    end
+
+    local spell, item = {}, {}
+    if GetLooseMacroIcons then GetLooseMacroIcons(spell) end
+    if GetMacroIcons then GetMacroIcons(spell) end
+    if GetLooseMacroItemIcons then GetLooseMacroItemIcons(item) end
+    if GetMacroItemIcons then GetMacroItemIcons(item) end
+    addAll(spell)
+    addAll(item)
+
+    macroIconList = icons
+    return icons
+end
+
+-- The icon a group falls back to when its creator hasn't picked one: a
+-- distinct icon from the list, chosen by the group's name so it stays the
+-- same for everyone and across sessions.
+function TrialChatCommon.GetDefaultGroupIcon(name)
+    local icons = TrialChatCommon.GetMacroIconList()
+    if #icons == 0 then return nil end
+    local hash = 0
+    local key = TrialChatCommon.NormalizeName(name or "")
+    for index = 1, #key do
+        hash = (hash * 31 + string.byte(key, index)) % 2147483647
+    end
+    return icons[hash % #icons + 1]
 end
 
 local FADE_IN_PER_SECOND = 4

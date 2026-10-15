@@ -430,6 +430,13 @@ end
 
 local function setTileLook(tile, background, foreground, text, icon)
     tile.box:SetColor(background)
+    tile.icon:ClearAllPoints()
+    tile.icon:SetSize(tile:GetWidth() - 12, tile:GetHeight() - 12)
+    tile.icon:SetPoint("CENTER")
+    if tile.hasIconMask then
+        tile.icon:RemoveMaskTexture(tile.iconMask)
+        tile.hasIconMask = false
+    end
     if icon then
         UI.SetIcon(tile.icon, icon)
         UI.Tint(tile.icon, foreground)
@@ -443,6 +450,29 @@ local function setTileLook(tile, background, foreground, text, icon)
     end
 end
 
+-- Shows a raw texture (a group's chosen icon) on the tile instead of a named
+-- icon or initials.
+local function setTileTexture(tile, texture)
+    tile.icon:ClearAllPoints()
+    tile.icon:SetAllPoints(tile)
+    if not tile.iconMask then
+        tile.iconMask = tile:CreateMaskTexture()
+        tile.iconMask:SetTexture(
+            MEDIA .. "rounded-mask.tga",
+            "CLAMPTOBLACKADDITIVE",
+            "CLAMPTOBLACKADDITIVE")
+        tile.iconMask:SetAllPoints(tile.icon)
+    end
+    if not tile.hasIconMask then
+        tile.icon:AddMaskTexture(tile.iconMask)
+        tile.hasIconMask = true
+    end
+    tile.icon:SetTexture(texture)
+    tile.icon:SetVertexColor(1, 1, 1, 1)
+    tile.icon:Show()
+    tile.text:Hide()
+end
+
 -- The rounded square in front of a conversation: an icon or initials.
 function UI.CreateTile(parent, size)
     local tile = CreateFrame("Frame", nil, parent)
@@ -454,6 +484,7 @@ function UI.CreateTile(parent, size)
     tile.text = UI.CreateText(tile, UI.Font.label)
     tile.text:SetPoint("CENTER", tile, "CENTER", 1, 0)
     tile.SetLook = setTileLook
+    tile.SetTexture = setTileTexture
     return tile
 end
 

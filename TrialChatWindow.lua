@@ -287,6 +287,17 @@ local function updateHeader()
     local nearbyChat = isNearby(selected)
     local info = not nearbyChat and Groups:GetInfo(selected)
     header.title:SetText(getConversationName(selected))
+    local iconTexture = not nearbyChat and Groups:GetIcon(selected)
+    iconTexture = iconTexture and TrialChatCommon.GetIconTexture(iconTexture)
+    if nearbyChat then
+        header.tile:SetLook(Color.tile, Color.textSoft, nil, "pin")
+    elseif iconTexture then
+        header.tile.box:SetColor(Color.tile)
+        header.tile:SetTexture(iconTexture)
+    else
+        local colors = getTileColors(selected)
+        header.tile:SetLook(colors[1], colors[2], getInitials(getConversationName(selected)))
+    end
     if nearbyChat then
         local active = Nearby:GetActiveCount()
         local saved = Nearby:GetSavedCount()
@@ -337,6 +348,15 @@ local function sendToConversation(message, reply)
     else
         Groups:SendMessage(selected, message, reply)
     end
+end
+
+-- Typing /reload in a TrialChat message box acts as the command: the reload
+-- emote goes out in the conversation on screen (the same place a normal
+-- message would), and only then is the UI reloaded.
+local function reloadFromComposer()
+    TrialChat_Reload(function()
+        sendToConversation("/reload")
+    end)
 end
 
 -- Remembers the message a new message will answer, and shows it in both
@@ -394,12 +414,22 @@ local function sendComposerMessage()
     local input = composer.input
     local message = input:GetText()
     input:SetText("")
+    -- Typing /reload in the message box acts as the command: the reload emote
+    -- goes out in the conversation on screen, then the UI reloads.
+    if TrialChat_IsReloadCommand(message) then
+        reloadFromComposer()
+        return
+    end
     sendToConversation(message, takePendingReply())
     input:SetFocus()
 end
 
 -- The minimal view sends here too, so it answers the same message.
 local function sendWithReply(message)
+    if TrialChat_IsReloadCommand(message) then
+        reloadFromComposer()
+        return
+    end
     sendToConversation(message, takePendingReply())
 end
 
@@ -423,6 +453,20 @@ local function showEmoteMenu(owner)
             all:CreateButton("/" .. emote, function()
                 sendToConversation("/" .. emote)
             end)
+        end
+        local soundEmotes = {}
+        for emote in pairs(TrialChatCommon.SoundEmotes or {}) do
+            soundEmotes[#soundEmotes + 1] = emote
+        end
+        if #soundEmotes > 0 then
+            table.sort(soundEmotes)
+            local sound = root:CreateButton("Sound emotes (//)")
+            sound:SetScrollMode(400)
+            for _, emote in ipairs(soundEmotes) do
+                sound:CreateButton("//" .. emote, function()
+                    sendToConversation("//" .. emote)
+                end)
+            end
         end
         root:CreateButton("Write your own (/e)", function()
             composer.input:SetText("/e ")
@@ -607,6 +651,7 @@ local function updateConversations()
                 state = state,
                 unread = conversation.unread,
                 muted = conversation.muted,
+                icon = conversation.icon,
                 meta = state == "online" and (conversation.online .. " online")
                     or state == "connecting" and "connecting..." or "offline",
             }
@@ -663,6 +708,11 @@ local function showConversationMenu(owner, element)
             root:CreateDivider()
         end
         if Groups:IsCreator(id) then
+            root:CreateButton("Change icon...", function()
+                TrialChatIconPicker.Show(Groups:GetIcon(id), function(icon)
+                    Groups:SetIcon(id, icon)
+                end)
+            end)
             root:CreateButton("Delete group", function()
                 Groups:Confirm("delete", id)
             end)
@@ -739,8 +789,13 @@ local function initConversationRow(row, element)
     row.selection:SetShown(isSelected)
     updateConversationRowHover(row)
 
+    local iconTexture = element.icon
+        and TrialChatCommon.GetIconTexture(element.icon)
     if isNearby(element.key) then
         row.tile:SetLook(Color.tile, Color.textSoft, nil, "pin")
+    elseif iconTexture then
+        row.tile.box:SetColor(online and Color.tile or Color.tileOffline)
+        row.tile:SetTexture(iconTexture)
     elseif online then
         local colors = getTileColors(element.key)
         row.tile:SetLook(colors[1], colors[2], getInitials(element.name))
@@ -1029,8 +1084,25 @@ local function createSidebar()
 end
 
 local function createHeader()
+    header.tile = UI.CreateTile(main, 28)
+    header.tile:SetPoint("TOPLEFT", main, "TOPLEFT", 20, -16)
+    header.tile:EnableMouse(true)
+    header.tile:SetScript("OnMouseUp", function(_, button)
+        if button ~= "LeftButton" or isNearby(selected) then return end
+        if not Groups:IsCreator(selected) then return end
+        TrialChatIconPicker.Show(Groups:GetIcon(selected), function(icon)
+            Groups:SetIcon(selected, icon)
+        end)
+    end)
+    header.tile:SetScript("OnEnter", function(tile)
+        if isNearby(selected) or not Groups:IsCreator(selected) then return end
+        GameTooltip:SetOwner(tile, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Change group icon")
+        GameTooltip:Show()
+    end)
+    header.tile:SetScript("OnLeave", GameTooltip_Hide)
     header.title = UI.CreateText(main, UI.Font.heading, Color.white)
-    header.title:SetPoint("TOPLEFT", main, "TOPLEFT", 20, -14)
+    header.title:SetPoint("TOPLEFT", header.tile, "TOPRIGHT", 10, -1)
     header.title:SetJustifyH("LEFT")
     header.title:SetWordWrap(false)
     header.subtitle = UI.CreateText(main, UI.Font.small, Color.muted)

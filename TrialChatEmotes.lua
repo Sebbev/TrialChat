@@ -14,6 +14,7 @@ TrialChatCommon.EmoteDescriptions = {
     agreeagain = "nods again, hoping the conversation ends before a question arrives.",
     aim = "aims a crumpled paper ball at a basket. Destiny awaits.",
     airguitar = "strums an invisible guitar with outrageous enthusiasm.",
+    reload = "is reloading their revolver... with a new updated version of the addon... you should do the same!",
     airhug = "wraps their arms around an imaginary friend.",
     airquote = "raises both hands and makes exaggerated air quotes.",
     allow = "allows themself one more snack. A generous ruler.",

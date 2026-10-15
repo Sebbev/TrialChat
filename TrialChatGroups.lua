@@ -38,10 +38,16 @@ local function getSavedGroups()
     return TrialChatDB.groups
 end
 
+local isSelf = TrialChatCommon.IsSelf
+local namesMatch = TrialChatCommon.NamesMatch
+
 local function savedGroupIsCreator(group)
     if type(group) ~= "table" then return false end
-    if group.isCreator ~= nil then return group.isCreator == true end
-    return not group.creatorName and not group.memberName
+    if group.creatorName then
+        return namesMatch(group.creatorName, selfName)
+    end
+    if group.isCreator == true then return true end
+    return not group.memberName
 end
 
 local function getGroupId(name)
@@ -51,9 +57,6 @@ end
 local function showNotice(message)
     print("|cffff7d0a[TrialChat Groups]|r " .. message)
 end
-
-local isSelf = TrialChatCommon.IsSelf
-local namesMatch = TrialChatCommon.NamesMatch
 
 local function findMemberKey(session, name)
     for key, member in pairs(session.members) do
@@ -551,6 +554,19 @@ local function sendGroupMessage(session, message, reply)
     local isEmote
     local emoteToken
     local emoteTarget
+    -- Sound emotes use "//" and play a local file; a sound emote that is also
+    -- a normal emote continues below as that emote, a sound-only one stops here.
+    local isSoundEmote, soundEmote, soundPlayed =
+        TrialChatCommon.ParseSoundEmote(message)
+    if isSoundEmote then
+        if not soundEmote then
+            if not soundPlayed then
+                showNotice("No sound emote found for that command.")
+            end
+            return
+        end
+        message = soundEmote
+    end
     message, isEmote, emoteToken, emoteTarget =
         TrialChatCommon.ParseEmote(message)
     if not message then
@@ -616,6 +632,7 @@ persistGroup = function(session)
     savedGroups[session.id] = {
         name = session.name,
         password = session.password,
+        icon = session.icon,
         muted = session.muted == true,
         memberName = session.reconnectName or session.targetName,
         isCreator = session.isCreator == true,
@@ -742,8 +759,8 @@ local function joinGroup(name, password, targetName, savedGroup, autoJoin)
         password = password,
         members = {},
         targetName = joinCandidates[1],
-        isCreator = savedGroup and savedGroup.isCreator
-            and savedGroup.creatorName and namesMatch(savedGroup.creatorName, selfName),
+        icon = savedGroup and savedGroup.icon,
+        isCreator = savedGroup and savedGroupIsCreator(savedGroup),
         creatorName = savedGroup and savedGroup.creatorName,
         history = savedGroup and type(savedGroup.history) == "table"
             and savedGroup.history or {},
@@ -795,6 +812,7 @@ startJoinAttempt = function(session, candidateIndex)
             createGroup(session.name, session.password, getSavedGroups()[id] or {
                 name = session.name,
                 password = session.password,
+                icon = session.icon,
                 isCreator = session.isCreator == true,
                 creatorName = session.creatorName,
                 memberName = session.reconnectName,
@@ -816,7 +834,7 @@ startJoinAttempt = function(session, candidateIndex)
     end)
 end
 
-createGroup = function(name, password, savedGroup, autoJoin)
+createGroup = function(name, password, savedGroup, autoJoin, icon)
     local id = getGroupId(name)
     if activeGroups[id] then
         showSession(activeGroups[id])
@@ -832,6 +850,8 @@ createGroup = function(name, password, savedGroup, autoJoin)
         name = name,
         password = password,
         members = {},
+        icon = icon or (savedGroup and savedGroup.icon)
+            or TrialChatCommon.GetDefaultGroupIcon(name),
         isCreator = savedGroup
             and savedGroupIsCreator(savedGroup) or not savedGroup,
         creatorName = savedGroup and savedGroup.creatorName
@@ -871,7 +891,7 @@ local function submitGroupDialog(mode, values, preset)
     if problem then return problem end
 
     if mode == "create" then
-        createGroup(name, password, preset)
+        createGroup(name, password, preset, nil, values.icon)
         return nil
     end
     local memberName = strtrim(values.memberName or "")
@@ -1159,6 +1179,7 @@ function Groups:GetConversations()
             state = state,
             unread = session and getUnreadCount(session) or 0,
             online = session and countMembers(session) or 0,
+            icon = (session and session.icon) or (savedGroup and savedGroup.icon),
             muted = (session and session.muted or savedGroup and savedGroup.muted) == true,
         }
     end
@@ -1209,6 +1230,7 @@ function Groups:GetInfo(id)
         name = session.name,
         online = #online,
         members = #online + #offline,
+        icon = session.icon,
         muted = session.muted == true,
         loadingHistory = session.historyLoad ~= nil,
         loadedHistory = session.historyLoad and session.historyLoad.added or 0,
@@ -1307,6 +1329,33 @@ function Groups:SetMuted(id, muted)
         persistGroup(session)
     elseif type(savedGroup) == "table" then
         savedGroup.muted = muted == true
+    end
+    notifyChange("groups", id)
+end
+
+-- The group's icon, from the live session or the saved group.
+function Groups:GetIcon(id)
+    local session = activeGroups[id]
+    if session then return session.icon end
+    local savedGroup = getSavedGroups()[id]
+    return type(savedGroup) == "table" and savedGroup.icon or nil
+end
+
+-- Sets the group's icon. Only the creator owns it; members receive it over
+-- the group protocol. A nil icon clears it, back to the group's initials.
+function Groups:SetIcon(id, icon)
+    local session = activeGroups[id]
+    if session then
+        if not session.isCreator then return end
+        session.icon = icon
+        persistGroup(session)
+        if icon then
+            sendToMembers(session, "ICON", icon)
+        end
+    else
+        local savedGroup = getSavedGroups()[id]
+        if type(savedGroup) ~= "table" or not savedGroupIsCreator(savedGroup) then return end
+        savedGroup.icon = icon
     end
     notifyChange("groups", id)
 end
@@ -1498,6 +1547,9 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             sendGroupProtocol(session, "WELCOME", sender,
                 session.creatorName or (session.isCreator and selfName) or "")
             sendGroupProtocol(session, "CLASS", sender, playerClass)
+            if session.icon then
+                sendGroupProtocol(session, "ICON", sender, session.icon)
+            end
             for key, member in pairs(session.members) do
                 if not namesMatch(member.name, selfName or UnitName("player"))
                     and not namesMatch(member.name, sender) then
@@ -1522,6 +1574,7 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
         if pending and isJoinCandidate(pending, sender) then
             if body ~= "" then
                 pending.creatorName = body
+                pending.isCreator = namesMatch(body, selfName)
             end
             completePendingJoin(pending, sender)
         end
@@ -1559,6 +1612,23 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
                 member.classFile = body
                 TrialChatCommon.RememberClass(member.name, body, true)
                 notifyChange("members", id)
+            end
+        end
+        return
+    end
+
+    -- The group's icon, chosen by its creator and passed on like the name.
+    -- Members only relay it; the creator owns it and rebroadcasts changes.
+    if kind == "ICON" then
+        if body ~= "" and #body <= 128 and not string.find(body, "[|%c]") then
+            if session and hasMember(session, sender) then
+                if session.icon ~= body then
+                    session.icon = body
+                    if saveGroup then saveGroup(session) end
+                    notifyChange("groups", id)
+                end
+            elseif pending and isJoinCandidate(pending, sender) then
+                pending.icon = body
             end
         end
         return
@@ -1696,6 +1766,10 @@ C_Timer.NewTicker(MEMBER_UPDATE_INTERVAL, function()
         end
         if getOwnLook() then
             sendToMembers(session, "LOOK", getOwnLook())
+        end
+        -- The creator owns the group's icon, so only it rebroadcasts it.
+        if session.isCreator and session.icon then
+            sendToMembers(session, "ICON", session.icon)
         end
 
         local expired = {}
