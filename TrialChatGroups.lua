@@ -562,7 +562,8 @@ local function sendGroupMessage(session, message, reply)
         TrialChatCommon.ParseSoundEmote(message)
     if isSoundEmote then
         if not soundEmote then
-            if not soundPlayed and not soundWaiting then
+            if not soundPlayed and not soundWaiting
+                and TrialChatCommon.IsGameSoundEnabled() then
                 showNotice("No sound emote found for that command.")
             end
             if soundName then
