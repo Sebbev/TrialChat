@@ -56,7 +56,7 @@ TrialChatCommon.SoundEmotes = {
     bonecrack = "bonecrack.mp3",
     pinkman = "pinkman.mp3",
     pickle = "pickle.mp3",
-    meow = "meow.mp3"
+    meow = "meow.mp3",
 }
 
 -- How long each file plays, in seconds, measured from the files themselves.
@@ -87,4 +87,6 @@ TrialChatCommon.SoundEmoteDurations = {
     ["rip.mp3"] = 10.22,
     ["run.mp3"] = 8.28,
     ["yrunning.mp3"] = 1.65,
+    ["meow.mp3"] = 0.85,
+    ["pickle.mp3"] = 1.96,
 }
