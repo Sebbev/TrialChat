@@ -14,7 +14,7 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 * **Echo to Say:** With **Echo to Say (/s)** on, your nearby messages are also sent as a normal `/say`, so players without TrialChat can read them (your bubbles aren't doubled).
 * **Chat Bubbles:** Type `/tcbubbles` to turn chat bubbles on or off, `/tcbubbles self` for just the bubble over your own character, or `/tcbubbles groups` for just group chat bubbles. The same switches are in the Options window, which the gear button in the window opens.
 * **Emotes:** Type them like in normal chat (`/wave`, `/e waves hello`), or pick one with the smiley button next to the message box.
-* **Sound Emotes:** Type `//` and an emote name (`//laugh`, `//cheer`, `//vineboom`) to also play a local sound file from `Media/SoundEmotes`. If the name is a normal emote, the emote is sent to chat as well; if it is only a sound emote, just the sound plays for you. Files are listed in `TrialChatSoundEmotes.lua`, and names without an entry fall back to `<name>.mp3`.
+* **Sound Emotes:** Type `//` and an emote name (`//laugh`, `//cheer`, `//vineboom`) to also play a sound file from `Media/SoundEmotes`. The sound plays for you and for the TrialChat players around you (and in your group): only the name is sent, and each of them plays their own copy of the file. If the name is a normal emote, the emote is sent to chat as well; a sound-only emote is heard but doesn't show as a chat line. Files are listed in `TrialChatSoundEmotes.lua`, and names without an entry fall back to `<name>.mp3`. Sound emotes play one at a time, so a new one never talks over (or gets cut off by) one that is still playing.
 * **Group Icons:** A group has an icon, chosen by its creator from the same icons macros use. Pick one in the **Create a group** dialog; the creator can change it later by clicking the icon in the group's header, or with **Change icon...** in the group's right-click menu. Everyone in the group sees the same icon.
 * **Replies:** Right-click a message for a small menu: **Reply** shows what you're answering above the message box until you send, and **Copy text** puts the message in a box you can select. The reply carries a little of the original with it, so other TrialChat users see what you answered; players on older versions see it as plain text.
 
@@ -35,7 +35,7 @@ This World of Warcraft Retail add-on allows characters (including trial accounts
 * **Sound Notifications:** Never miss a message with integrated group chat audio alerts.
 * **Rich Media Support:** Interactive clickable links for **webpages, items, quests**, and even **Musician** add-on songs.
 * **Emotes:** Support for almost all standard WoW emotes.
-* **Sound Emotes:** Play local audio for `//`-triggered emotes, with files in `Media/SoundEmotes` and a mapping in `TrialChatSoundEmotes.lua`.
+* **Sound Emotes:** Play audio for `//`-triggered emotes, with files in `Media/SoundEmotes` and a mapping in `TrialChatSoundEmotes.lua`. The name of a sound emote is sent to nearby TrialChat players and your group, so they hear it too (each plays their own copy of the file). They never play over each other: one that is still playing finishes first, and the next waits its turn.
 * ...and a bunch of other stuff!
 
 

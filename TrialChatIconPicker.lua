@@ -49,22 +49,37 @@ local function findIconForName(query)
     end
 end
 
+local iconNames = {}
+
+-- The icon's own name, when we have one: from the shipped id list, or the
+-- icon's own text for an icon stored by name. Nil when all we have is the
+-- number. Cached per icon, false for the ones with no name.
+local function getIconName(icon)
+    local key = tostring(icon)
+    local cached = iconNames[key]
+    if cached ~= nil then
+        if cached == false then return nil end
+        return cached
+    end
+
+    local name
+    local fileID = tonumber(key)
+    if fileID then
+        if TrialChatIconNames then name = TrialChatIconNames[fileID] end
+    else
+        name = string.gsub(key, "^Interface[/\\]Icons[/\\]", "")
+    end
+
+    if name == "" then name = nil end
+    iconNames[key] = name or false
+    return name
+end
+
 local function getIconSearchName(icon)
     local key = tostring(icon)
     if iconSearchNames[key] then return iconSearchNames[key] end
 
-    local name = key
-    local fileID = tonumber(key)
-    if fileID and C_Texture and C_Texture.GetFilenameFromFileDataID then
-        local ok, filename = pcall(C_Texture.GetFilenameFromFileDataID, fileID)
-        if ok and type(filename) == "string"
-            and not string.match(filename, "^FileData ID %d+$") then
-            name = filename
-        end
-    end
-
-    name = string.gsub(name, "^Interface[/\\]Icons[/\\]", "")
-    name = strlower(string.gsub(name, "[^%w]+", " "))
+    local name = strlower(string.gsub(getIconName(icon) or key, "[^%w]+", " "))
     iconSearchNames[key] = name
     return name
 end
@@ -135,24 +150,34 @@ local function getSearchableSpellIcons()
     return searchableSpellIcons
 end
 
+-- The tooltip for an icon: its name, with the file id behind it, so an icon
+-- can be named and handed to someone as text. An icon our list doesn't name
+-- shows its id alone.
 local function getIconDisplayName(icon)
     local key = tostring(icon)
-    for _, spell in ipairs(getSearchableSpellIcons()) do
-        if spell.icon == key then return spell.displayName end
-    end
+    local name = getIconName(icon)
 
-    if not iconSearchNames[key] then
-        getIconSearchName(icon)
+    -- An icon our list doesn't name may still be one of the player's spells,
+    -- which names it well enough to show.
+    if not name then
+        for _, spell in ipairs(getSearchableSpellIcons()) do
+            if spell.icon == key then
+                name = spell.displayName
+                break
+            end
+        end
     end
-    local filename = string.gsub(
-        iconSearchNames[key] or "", "^interface[/\\]icons[/\\]", "")
-    filename = string.gsub(filename, "[/\\]", " ")
-    filename = string.gsub(filename, "[_%-]+", " ")
-    filename = strtrim(filename)
-    if filename == "" or filename == key then
-        return "Icon " .. key
-    end
-    return filename
+    if not name then return key end
+
+    name = string.gsub(name, "[/\\]", " ")
+    name = string.gsub(name, "[_%-]+", " ")
+    name = strtrim(name)
+    if name == "" then return key end
+
+    -- An icon stored as a name is its own name already; only a file id gets
+    -- the name in front of it.
+    if not tonumber(key) then return name end
+    return name .. " " .. key
 end
 
 -- The icon list sliced into rows of COLUMNS, one row per scroll box element.
@@ -321,7 +346,7 @@ local function createPicker()
         icon = "search",
         insetLeft = 32,
         maxLetters = 64,
-        placeholder = "Search ID or spell/item name",
+        placeholder = "Search name or ID",
     })
     frame.search:SetFontObject(UI.Font.item)
     frame.search.placeholder:SetFontObject(UI.Font.item)

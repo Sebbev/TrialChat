@@ -555,13 +555,18 @@ local function sendGroupMessage(session, message, reply)
     local emoteToken
     local emoteTarget
     -- Sound emotes use "//" and play a local file; a sound emote that is also
-    -- a normal emote continues below as that emote, a sound-only one stops here.
-    local isSoundEmote, soundEmote, soundPlayed =
+    -- a normal emote continues below as that emote, a sound-only one stops
+    -- here. Either way its name is sent to the group as well, so everyone in
+    -- it hears the sound: they play their own copy of the same file.
+    local isSoundEmote, soundEmote, soundPlayed, soundWaiting, soundName =
         TrialChatCommon.ParseSoundEmote(message)
     if isSoundEmote then
         if not soundEmote then
-            if not soundPlayed then
+            if not soundPlayed and not soundWaiting then
                 showNotice("No sound emote found for that command.")
+            end
+            if soundName then
+                sendToMembers(session, "SOUND", soundName)
             end
             return
         end
@@ -605,6 +610,11 @@ local function sendGroupMessage(session, message, reply)
             sendToMembers(session, "PART",
                 messageId .. ":" .. index .. ":" .. #parts .. ":" .. part)
         end
+    end
+    -- The sound emote's name rides along with the message, so everyone in
+    -- the group hears the sound as well; each plays their own copy of the file.
+    if soundName then
+        sendToMembers(session, "SOUND", soundName)
     end
     if added and not isEmote then
         TrialChatBubbles.ShowOwnMessage(entry.message, session.name)
@@ -1680,6 +1690,14 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
             messageId, tonumber(index), tonumber(count), chunk)
         if not body then return end
         kind = "MSG2"
+    end
+
+    -- A sound emote someone in the group triggered: only its name travels,
+    -- and each member plays their own copy of the same file. No chat line
+    -- goes with it for a sound-only emote, so it is heard but not shown.
+    if kind == "SOUND" and session and hasMember(session, sender) then
+        TrialChatCommon.PlayReceivedSoundEmote(sender, body)
+        return
     end
 
     if (kind == "MSG2" or kind == "EMOTE2")

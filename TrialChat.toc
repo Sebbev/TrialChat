@@ -14,6 +14,7 @@ TrialChatBubbles.lua
 TrialChat.lua
 TrialChatGroups.lua
 TrialChatUI.lua
+TrialChatIconNames.lua
 TrialChatIconPicker.lua
 TrialChatGroupDialog.lua
 TrialChatMessages.lua

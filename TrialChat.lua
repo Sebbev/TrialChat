@@ -1,6 +1,7 @@
 local PREFIX = "TrialChat"
 local MESSAGE_TAG = "M:"
 local EMOTE_TAG = "E:"
+local SOUND_TAG = "S:"
 local PING = "C:PING"
 local PONG = "C:PONG"
 local CLASS_TAG = "C:CLASS:"
@@ -406,6 +407,15 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
         return
     end
 
+    -- A sound emote someone triggered: only its name travels, and you play
+    -- your own copy of the file, so everyone around you hears it too.
+    if string.sub(message, 1, #SOUND_TAG) == SOUND_TAG then
+        noteActiveListener(sender)
+        TrialChatCommon.PlayReceivedSoundEmote(sender,
+            string.sub(message, #SOUND_TAG + 1))
+        return
+    end
+
     if message == PING and channel == "WHISPER" then
         C_ChatInfo.SendAddonMessage(PREFIX, PONG, "WHISPER", sender)
         noteActiveListener(sender)
@@ -514,62 +524,12 @@ C_Timer.NewTicker(2, function()
     end
 end)
 
-sendTrialChatMessage = function(msg, reply)
-    msg = strtrim(msg or "")
-    if msg == "" then
-        showTrialChatNotice("Enter a message to send with /tc.", true)
-        return
-    end
-
-    if #msg > MAX_CHAT_MESSAGE_BYTES then
-        showTrialChatNotice("Message is too long (maximum "
-            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
-        return
-    end
-
-    local isEmote
-    local emoteToken
-    local emoteTarget
-    -- Sound emotes use "//" and play a local file; a sound emote that is also
-    -- a normal emote continues below as that emote, a sound-only one stops here.
-    local isSoundEmote, soundEmote, soundPlayed =
-        TrialChatCommon.ParseSoundEmote(msg)
-    if isSoundEmote then
-        if not soundEmote then
-            if not soundPlayed then
-                showTrialChatNotice("No sound emote found for that command.", true)
-            end
-            return
-        end
-        msg = soundEmote
-    end
-    msg, isEmote, emoteToken, emoteTarget = TrialChatCommon.ParseEmote(msg)
-    if not msg then
-        showTrialChatNotice("Enter the text for your emote.", true)
-        return
-    end
-    if #msg > MAX_CHAT_MESSAGE_BYTES then
-        showTrialChatNotice("Message is too long (maximum "
-            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
-        return
-    end
-    -- An emote isn't a message, so it never answers one.
-    if isEmote then reply = nil end
-    TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
-    local payload = (isEmote and EMOTE_TAG or MESSAGE_TAG)
-        .. TrialChatCommon.EncodeReplyPrefix(reply)
-        .. TrialChatCommon.EncodeMessageMarkup(TrialChatCommon.AddOwnSongLinkOwner(msg))
-    -- Too long for one addon message: send it in parts the receiver joins.
-    local packets = { payload }
-    if #payload > 255 then
-        local partId = TrialChatCommon.NewPartId()
-        local parts = TrialChatCommon.SplitIntoParts(payload, NEARBY_PART_BYTES)
-        packets = {}
-        for index, part in ipairs(parts) do
-            packets[index] = PART_TAG .. partId .. ":" .. index .. ":"
-                .. #parts .. ":" .. part
-        end
-    end
+-- Sends these packets to the people around you: your party, every TrialChat
+-- player listening nearby plus the listeners you saved, and the members of
+-- your raid (a raid isn't sent to as a channel, so its members are whispered
+-- one by one). Your class goes along once in a while, so their copy of
+-- TrialChat can color your name.
+local function sendNearbyPackets(packets)
     local classPayload = playerClass and RAID_CLASS_COLORS[playerClass]
         and CLASS_TAG .. playerClass or nil
     local sentToGroup = IsInGroup()
@@ -630,6 +590,76 @@ sendTrialChatMessage = function(msg, reply)
             end
         end
     end
+end
+
+sendTrialChatMessage = function(msg, reply)
+    msg = strtrim(msg or "")
+    if msg == "" then
+        showTrialChatNotice("Enter a message to send with /tc.", true)
+        return
+    end
+
+    if #msg > MAX_CHAT_MESSAGE_BYTES then
+        showTrialChatNotice("Message is too long (maximum "
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
+        return
+    end
+
+    local isEmote
+    local emoteToken
+    local emoteTarget
+    -- Sound emotes use "//" and play a local file; a sound emote that is also
+    -- a normal emote continues below as that emote, a sound-only one stops
+    -- here. Either way its name goes out to the people around you, so they
+    -- hear it too: they play their own copy of the same file.
+    local isSoundEmote, soundEmote, soundPlayed, soundWaiting, soundName =
+        TrialChatCommon.ParseSoundEmote(msg)
+    if isSoundEmote then
+        if not soundEmote then
+            if not soundPlayed and not soundWaiting then
+                showTrialChatNotice("No sound emote found for that command.", true)
+            end
+            if soundName then
+                sendNearbyPackets({ SOUND_TAG .. soundName })
+            end
+            return
+        end
+        msg = soundEmote
+    end
+    msg, isEmote, emoteToken, emoteTarget = TrialChatCommon.ParseEmote(msg)
+    if not msg then
+        showTrialChatNotice("Enter the text for your emote.", true)
+        return
+    end
+    if #msg > MAX_CHAT_MESSAGE_BYTES then
+        showTrialChatNotice("Message is too long (maximum "
+            .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
+        return
+    end
+    -- An emote isn't a message, so it never answers one.
+    if isEmote then reply = nil end
+    TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
+    local payload = (isEmote and EMOTE_TAG or MESSAGE_TAG)
+        .. TrialChatCommon.EncodeReplyPrefix(reply)
+        .. TrialChatCommon.EncodeMessageMarkup(TrialChatCommon.AddOwnSongLinkOwner(msg))
+    -- Too long for one addon message: send it in parts the receiver joins.
+    local packets = { payload }
+    if #payload > 255 then
+        local partId = TrialChatCommon.NewPartId()
+        local parts = TrialChatCommon.SplitIntoParts(payload, NEARBY_PART_BYTES)
+        packets = {}
+        for index, part in ipairs(parts) do
+            packets[index] = PART_TAG .. partId .. ":" .. index .. ":"
+                .. #parts .. ":" .. part
+        end
+    end
+    -- The name of a sound emote travels as its own small packet with the
+    -- message, so everyone who gets the message hears the sound as well:
+    -- each of them plays their own copy of the file.
+    if soundName then
+        packets[#packets + 1] = SOUND_TAG .. soundName
+    end
+    sendNearbyPackets(packets)
 
     addNearbyMessage(fullPlayerName or playerName, msg, isEmote, reply)
     -- With "echo to say" on, normal (non-emote) messages also go out as
