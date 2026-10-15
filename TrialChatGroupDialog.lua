@@ -13,6 +13,7 @@ local LABEL_GAP = 6
 local FIELD_HEIGHT = 32
 local FIELD_GAP = 14
 local BUTTON_HEIGHT = 32
+local ICON_BUTTON_SIZE = 72
 
 local dialog
 
@@ -26,21 +27,55 @@ local function getVisibleFields()
     return fields
 end
 
--- Fields from the top, then the problem (if any), then the buttons.
+local getChosenIcon
+
+local function updateIconButton()
+    if not dialog.iconButton then return end
+    dialog.iconButton:SetIcon(getChosenIcon())
+end
+
+-- The icon the group will get: the one picked, or the one derived from the
+-- name. Shown in the dialog so the preview matches what gets created.
+getChosenIcon = function()
+    if dialog.mode ~= "create" then return nil end
+    if dialog.icon then return dialog.icon end
+    local name = dialog.nameField and dialog.nameField:GetText() or ""
+    return TrialChatCommon.GetDefaultGroupIcon(name)
+end
+
+-- The visible text fields, in display order.
+local function getLayoutRows()
+    local rows = {}
+    for _, item in ipairs(getVisibleFields()) do
+        rows[#rows + 1] = { label = item.label, control = item.field }
+    end
+    return rows
+end
+
+-- The icon preview (when creating), fields, problem (if any), then buttons.
 local function layout()
     local y = -TITLE_HEIGHT
     for _, item in ipairs(dialog.fields) do
         item.label:Hide()
         item.field:Hide()
     end
-    for _, item in ipairs(getVisibleFields()) do
-        item.label:ClearAllPoints()
-        item.label:SetPoint("TOPLEFT", dialog, "TOPLEFT", PADDING, y)
-        item.label:Show()
+    dialog.iconButton:Hide()
+    if dialog.mode == "create" then
+        dialog.iconButton:ClearAllPoints()
+        dialog.iconButton:SetSize(ICON_BUTTON_SIZE, ICON_BUTTON_SIZE)
+        dialog.iconButton:SetPoint("TOP", dialog, "TOP", 0, y)
+        dialog.iconButton:Show()
+        y = y - ICON_BUTTON_SIZE - FIELD_GAP
+    end
+    for _, row in ipairs(getLayoutRows()) do
+        row.label:ClearAllPoints()
+        row.label:SetPoint("TOPLEFT", dialog, "TOPLEFT", PADDING, y)
+        row.label:Show()
         y = y - LABEL_HEIGHT - LABEL_GAP
-        item.field:ClearAllPoints()
-        item.field:SetPoint("TOPLEFT", dialog, "TOPLEFT", PADDING, y)
-        item.field:Show()
+        row.control:ClearAllPoints()
+        row.control:SetPoint("TOPLEFT", dialog, "TOPLEFT", PADDING, y)
+        row.control:SetWidth(WIDTH - 2 * PADDING)
+        row.control:Show()
         y = y - FIELD_HEIGHT - FIELD_GAP
     end
     local hasProblem = (dialog.problem:GetText() or "") ~= ""
@@ -62,6 +97,9 @@ local function submit()
     local values = {}
     for _, item in ipairs(getVisibleFields()) do
         values[item.key] = item.field:GetText()
+    end
+    if dialog.mode == "create" then
+        values.icon = getChosenIcon()
     end
     local problem = dialog.onSubmit(values)
     if problem then
@@ -140,6 +178,12 @@ local function createDialog()
         maxLetters = TrialChatGroups.MAX_NAME_BYTES,
         placeholder = "Letters, numbers, spaces",
     })
+    dialog.nameField = dialog.fields[#dialog.fields].field
+    dialog.nameField:HookScript("OnTextChanged", function(_, userInput)
+        if userInput and dialog.mode == "create" then
+            updateIconButton()
+        end
+    end)
     local password = addField("password", "Password", {
         maxLetters = TrialChatGroups.MAX_PASSWORD_BYTES,
         placeholder = "Shared by everyone in the group",
@@ -159,6 +203,18 @@ local function createDialog()
     addField("memberName", "Connect through", {
         maxLetters = 64,
         placeholder = "Name of an online member",
+    })
+
+    dialog.iconButton = TrialChatIconPicker.CreateButton(dialog, {
+        width = ICON_BUTTON_SIZE, height = ICON_BUTTON_SIZE, radius = 8,
+        previewSize = ICON_BUTTON_SIZE - 8,
+        tooltip = "Choose the group's icon. Everyone in the group sees it.",
+        onClick = function()
+            TrialChatIconPicker.Show(getChosenIcon(), function(icon)
+                dialog.icon = icon
+                updateIconButton()
+            end)
+        end,
     })
 
     dialog.problem = UI.CreateText(dialog, UI.Font.small, Color.error)
@@ -196,6 +252,8 @@ function TrialChatGroupDialog.Show(mode, preset, onSubmit)
     for _, item in ipairs(dialog.fields) do
         item.field:SetText(preset and preset[item.key] or "")
     end
+    dialog.icon = preset and preset.icon or nil
+    updateIconButton()
     dialog.problem:SetText("")
     layout()
     dialog:Show()

@@ -530,6 +530,19 @@ sendTrialChatMessage = function(msg, reply)
     local isEmote
     local emoteToken
     local emoteTarget
+    -- Sound emotes use "//" and play a local file; a sound emote that is also
+    -- a normal emote continues below as that emote, a sound-only one stops here.
+    local isSoundEmote, soundEmote, soundPlayed =
+        TrialChatCommon.ParseSoundEmote(msg)
+    if isSoundEmote then
+        if not soundEmote then
+            if not soundPlayed then
+                showTrialChatNotice("No sound emote found for that command.", true)
+            end
+            return
+        end
+        msg = soundEmote
+    end
     msg, isEmote, emoteToken, emoteTarget = TrialChatCommon.ParseEmote(msg)
     if not msg then
         showTrialChatNotice("Enter the text for your emote.", true)
@@ -796,26 +809,49 @@ SlashCmdList["TRIALCHAT"] = function(msg)
 end
 
 -- /reload still reloads the UI, but first tells the people around you that a
--- newer version of the addon is out, so they know to reload too, and echoes
--- the command itself to /say so everyone nearby sees it, whatever the "echo
--- to say" setting says. The reload waits a moment so both get away first.
+-- newer version of the addon is out, so they know to reload too.
+--
+-- The reload has to run in the same input event as the typed command. C_UI.Reload
+-- is restricted to hardware events, so deferring it (for example with C_Timer)
+-- makes the client block it with "Interface action failed because of an AddOn".
+-- Sending the notice first is fine: chat messages go out before the reload.
 local RELOAD_EMOTE = "reload"
-local RELOAD_ECHO = "/reload"
-local RELOAD_NOTICE_DELAY = 1
-local blizzardReload = SlashCmdList["RELOAD"]
 
-local function reloadWithNotice()
-    sendTrialChatMessage("/" .. RELOAD_EMOTE)
-    SendChatMessage(RELOAD_ECHO, "SAY")
-    C_Timer.After(RELOAD_NOTICE_DELAY, blizzardReload or ReloadUI)
+local function reloadUI()
+    if C_UI and C_UI.Reload then
+        C_UI.Reload()
+    else
+        ReloadUI()
+    end
+end
+
+-- Sends the TrialChat "reload" emote, then reloads the UI. The /reload slash
+-- command uses the default send (nearby chat and the current group); the
+-- TrialChat message box passes a send that targets the conversation being
+-- viewed, so the emote lands in the same chat it would if typed there.
+-- The emote is sent first, synchronously, and only then does the reload start.
+function TrialChat_Reload(sendEmote)
+    if sendEmote then
+        sendEmote()
+    else
+        sendTrialChatMessage("/" .. RELOAD_EMOTE)
+    end
+    reloadUI()
+end
+
+-- True when a TrialChat input box was given the "/reload" command, so it can
+-- be treated as a command instead of a chat message.
+function TrialChat_IsReloadCommand(message)
+    return string.lower(strtrim(message or "")) == "/reload"
 end
 
 SlashCmdList["RELOAD"] = function(msg)
-    msg = strtrim(msg or "")
-    if msg ~= "" and blizzardReload then
-        return blizzardReload(msg)
+    if strtrim(msg or "") ~= "" then
+        -- "/reload <argument>" keeps its plain meaning, without the notice.
+        reloadUI()
+        return
     end
-    reloadWithNotice()
+    TrialChat_Reload()
 end
 
 BINDING_NAME_TRIALCHAT_OPEN = "Open and start typing"

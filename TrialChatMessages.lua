@@ -279,9 +279,12 @@ local function initializeRow(list, row, element)
         UI.SetTextColor(text, Color.text)
         placeText(row, element, SIDE_PADDING, -TEXT_BOTTOM)
     else
+        -- Centered like a message continuation: starting at TEXT_LEFT keeps the
+        -- left gutter clear, so the hover timestamp (at TEXT_LEFT - 8) never
+        -- sits under a long emote.
         text:SetJustifyH("CENTER")
         UI.SetTextColor(text, element.color or Color.emote)
-        placeText(row, element, SIDE_PADDING, -CENTERED_PADDING)
+        placeText(row, element, TEXT_LEFT, -CENTERED_PADDING)
         if element.time then
             row.hoverTime:SetText(element.time)
             row.showsTimeOnHover = true
@@ -395,8 +398,10 @@ function List:Measure(element)
         height = self:MeasureText(element.text,
             width - SIDE_PADDING - RIGHT_PADDING) + TEXT_BOTTOM * 2
     else
+        -- Emotes are centered in the text column (see initializeRow), so they
+        -- wrap at the same width that is measured here.
         height = self:MeasureText(element.text,
-            width - SIDE_PADDING - RIGHT_PADDING) + CENTERED_PADDING * 2
+            width - TEXT_LEFT - RIGHT_PADDING) + CENTERED_PADDING * 2
     end
     element.height = math.ceil(height)
     element.measuredWidth = width
