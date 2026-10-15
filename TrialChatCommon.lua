@@ -895,6 +895,16 @@ scheduleSoundEmoteQueue = function()
     soundEmoteQueueTimer = C_Timer.After(delay, drainSoundEmoteQueue)
 end
 
+-- Whether this client's game sound is on at all. With sound disabled,
+-- PlaySoundFile returns false, which isn't "file not found", so callers use
+-- this to avoid a misleading notice.
+function TrialChatCommon.IsGameSoundEnabled()
+    if not GetCVar then return true end
+    if GetCVar("Sound_EnableAllSound") == "0" then return false end
+    if GetCVar("Sound_MasterVolume") == "0" then return false end
+    return true
+end
+
 -- Plays a sound emote's audio file, after any sound emote that is already
 -- playing. A missing file quietly does not play. Returns whether the sound
 -- started now, and whether one was already playing (then this one is waiting

@@ -55,6 +55,8 @@ TrialChatCommon.SoundEmotes = {
     goodboy = "goodboy.mp3",
     bonecrack = "bonecrack.mp3",
     pinkman = "pinkman.mp3",
+    pickle = "pickle.mp3",
+    meow = "meow.mp3"
 }
 
 -- How long each file plays, in seconds, measured from the files themselves.
