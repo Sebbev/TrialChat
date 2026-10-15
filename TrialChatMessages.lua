@@ -182,7 +182,42 @@ local function createRowParts(row)
     end)
 end
 
+-- An animated emoticon is redrawn a cell at a time (see TrialChatEmoji.lua);
+-- the text around it never changes. Only rows on screen tick, because a hidden
+-- frame gets no OnUpdate, and only rows that hold an animated emoticon get one.
+local function redrawEmoji(row)
+    row.text:SetText(TrialChatCommon.BuildEmojiText(row.emojiParts, GetTime()))
+end
+
+local function tickEmoji(row, elapsed)
+    row.emojiElapsed = (row.emojiElapsed or 0) + elapsed
+    local step = 1 / (TrialChatCommon.EmojiFPS or 8)
+    if row.emojiElapsed < step then return end
+    row.emojiElapsed = 0
+    redrawEmoji(row)
+end
+
+-- Sets a row's text and starts animating it when it holds an animated
+-- emoticon. The split into text and emoticons is cached on the element, since
+-- rows are recycled for whatever is scrolled into view.
+local function setRowText(row, element)
+    row.text:SetText(element.text)
+    if not element.emojiChecked then
+        element.emojiParts, element.emojiAnimated =
+            TrialChatCommon.SplitEmojiMarkup(element.text)
+        element.emojiChecked = true
+    end
+    if element.emojiAnimated then
+        row.emojiParts = element.emojiParts
+        row.emojiElapsed = 0
+        row:SetScript("OnUpdate", tickEmoji)
+    end
+end
+
 local function hideRowParts(row)
+    row:SetScript("OnUpdate", nil)
+    row.emojiParts = nil
+    row.emojiElapsed = nil
     row.avatar:Hide()
     row.name:Hide()
     row.time:Hide()
@@ -230,7 +265,7 @@ local function initializeRow(list, row, element)
 
     local text = row.text
     text:ClearAllPoints()
-    text:SetText(element.text)
+    setRowText(row, element)
     text:Show()
     if kind == "message" then
         text:SetJustifyH("LEFT")

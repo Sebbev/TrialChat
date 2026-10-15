@@ -40,10 +40,6 @@ local MESSAGE_VISIBLE_SECONDS = 7
 local REFRESH_DELAY = 0.1
 local RENDER_DELAY = 0.3
 local SEPARATOR = " \194\183 " -- a middle dot between details
-local COMMON_EMOTES = {
-    "wave", "hello", "bye", "thank", "cheer", "applaud", "dance", "laugh",
-    "hug", "bow", "salute", "flex", "nod", "shrug", "sigh", "cry",
-}
 
 local Nearby = TrialChatNearby
 local Groups = TrialChatGroups
@@ -170,13 +166,14 @@ end
 
 -- Player links in messages are shown as plain text, like the chat log did.
 local function formatNearbyMessage(entry)
-    return TrialChatCommon.RemovePlayerLinks(
-        TrialChatCommon.FormatMessageText(entry.message or ""))
+    return TrialChatCommon.RemovePlayerLinks(TrialChatCommon.FormatMessageText(
+        TrialChatCommon.ApplyEmojiMarkup(entry.message or "")))
 end
 
 local function formatGroupMessage(entry)
     return TrialChatCommon.RemovePlayerLinks(TrialChatCommon.FormatMessageText(
-        TrialChatCommon.AddSongLinkOwner(entry.message or "", entry.sender)))
+        TrialChatCommon.ApplyEmojiMarkup(TrialChatCommon.AddSongLinkOwner(
+            entry.message or "", entry.sender))))
 end
 
 local function getInitials(name)
@@ -433,46 +430,66 @@ local function sendWithReply(message)
     sendToConversation(message, takePendingReply())
 end
 
-local function showEmoteMenu(owner)
+-- The list of every emote, picked from the picker's "All emotes" button.
+local function showAllEmotes(owner)
     MenuUtil.CreateContextMenu(owner, function(_, root)
-        root:CreateTitle("Emotes")
-        for _, emote in ipairs(COMMON_EMOTES) do
-            root:CreateButton("/" .. emote, function()
-                sendToConversation("/" .. emote)
-            end)
-        end
-        root:CreateDivider()
-        local all = root:CreateButton("All emotes")
-        all:SetScrollMode(400)
+        root:CreateTitle("All emotes")
+        if root.SetScrollMode then root:SetScrollMode(400) end
         local names = {}
         for emote in pairs(TrialChatCommon.EmoteDescriptions or {}) do
             names[#names + 1] = emote
         end
         table.sort(names)
         for _, emote in ipairs(names) do
-            all:CreateButton("/" .. emote, function()
+            root:CreateButton("/" .. emote, function()
                 sendToConversation("/" .. emote)
             end)
         end
-        local soundEmotes = {}
-        for emote in pairs(TrialChatCommon.SoundEmotes or {}) do
-            soundEmotes[#soundEmotes + 1] = emote
-        end
-        if #soundEmotes > 0 then
-            table.sort(soundEmotes)
-            local sound = root:CreateButton("Sound emotes (//)")
-            sound:SetScrollMode(400)
-            for _, emote in ipairs(soundEmotes) do
-                sound:CreateButton("//" .. emote, function()
-                    sendToConversation("//" .. emote)
-                end)
-            end
-        end
-        root:CreateButton("Write your own (/e)", function()
-            composer.input:SetText("/e ")
-            composer.input:SetFocus()
-        end)
     end)
+end
+
+-- The list of sound emotes, picked from the picker's "Sound emotes" button.
+local function showSoundEmotes(owner)
+    local soundEmotes = {}
+    for emote in pairs(TrialChatCommon.SoundEmotes or {}) do
+        soundEmotes[#soundEmotes + 1] = emote
+    end
+    table.sort(soundEmotes)
+    MenuUtil.CreateContextMenu(owner, function(_, root)
+        root:CreateTitle("Sound emotes")
+        if root.SetScrollMode then root:SetScrollMode(400) end
+        for _, emote in ipairs(soundEmotes) do
+            root:CreateButton("//" .. emote, function()
+                sendToConversation("//" .. emote)
+            end)
+        end
+    end)
+end
+
+-- The smiley button opens the emoji grid; picking one drops its shortcut into
+-- the message box. The emote lists and "make your own" sit under the grid.
+local function showEmoteMenu(owner)
+    TrialChatEmojiPicker.Show({
+        onPick = function(entry)
+            local input = composer.input
+            if not input then return end
+            -- Dropped at the cursor when typing, or at the end of whatever is
+            -- already there when the box isn't in focus.
+            if not input:HasFocus() then
+                input:SetCursorPosition(#(input:GetText() or ""))
+            end
+            input:Insert(entry.shortcut)
+            input:SetFocus()
+        end,
+        onAllEmotes = function() showAllEmotes(owner) end,
+        onSoundEmotes = function() showSoundEmotes(owner) end,
+        onWriteOwn = function()
+            local input = composer.input
+            if not input then return end
+            input:SetText("/e ")
+            input:SetFocus()
+        end,
+    })
 end
 
 ---------------------------------------------------------------------------
