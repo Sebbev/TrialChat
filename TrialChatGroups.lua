@@ -175,9 +175,9 @@ end
 
 local function sendGroupProtocol(session, kind, target, body)
     if not target then return false end
-    if kind == "MSG2" or kind == "EMOTE2" then
-        body = TrialChatCommon.EncodeMessageMarkup(body or "")
-    end
+    -- Message bodies arrive here already encoded (see sendGroupMessage and
+    -- sendHistoryEntry): the reply prefix needs its separators to survive
+    -- as separators, so the text can't be encoded a second time here.
     local payload = GROUP_TAG .. kind .. "|" .. session.id .. "|" .. (body or "")
     if #payload > 255 then
         showNotice("That group message is too long to send.")
@@ -275,13 +275,16 @@ end
 
 local function addGroupMessage(
     session, sender, message, isEmote, messageId, timestamp, isHistorical,
-    shouldNotify)
+    shouldNotify, reply)
     if isHistorical then
         addKnownMember(session, sender)
     else
         addMember(session, sender)
     end
     message = TrialChatCommon.NormalizeMessageMarkup(message)
+    if reply then
+        reply.text = TrialChatCommon.NormalizeMessageMarkup(reply.text or "")
+    end
     session.history = type(session.history) == "table" and session.history or {}
     ensureHistoryIndex(session)
 
@@ -306,6 +309,7 @@ local function addGroupMessage(
         message = message,
         isEmote = isEmote,
         timestamp = timestamp,
+        reply = reply,
     }
     if isSelf(sender) or isGroupViewed(session) then
         entry.read = true
@@ -323,9 +327,16 @@ end
 
 local function sendHistoryEntry(session, target, entry, initialDelay)
     local emoteFlag = entry.isEmote and "E" or "M"
-    local serialized = TrialChatCommon.EncodeMessageMarkup(table.concat({
-        entry.id, tostring(entry.timestamp), entry.sender, emoteFlag, entry.message,
-    }, ":"))
+    -- The message keeps its reply prefix, and the text stays encoded, so
+    -- the receiver can tell the reply's separators apart (see
+    -- TrialChatCommon.EncodeReplyPrefix).
+    local serialized = table.concat({
+        entry.id, tostring(entry.timestamp),
+        TrialChatCommon.EncodeMessageMarkup(entry.sender),
+        emoteFlag,
+        TrialChatCommon.EncodeReplyPrefix(entry.reply)
+            .. TrialChatCommon.EncodeMessageMarkup(entry.message),
+    }, ":")
     local chunkCount = math.ceil(#serialized / HISTORY_CHUNK_BYTES)
     for index = 1, chunkCount do
         local chunk = string.sub(serialized,
@@ -418,15 +429,19 @@ local function receiveHistoryChunk(session, sender, body)
     end
     pendingHistoryChunks[key] = nil
 
-    local serialized = TrialChatCommon.DecodeMessageMarkup(
-        table.concat(transfer.chunks))
-    local entryId, timestamp, entrySender, emoteFlag, message =
+    local serialized = table.concat(transfer.chunks)
+    -- Read the reply before decoding, so its separators still hold.
+    local entryId, rawTimestamp, rawSender, emoteFlag, encodedMessage =
         string.match(serialized, "^([%x%-]+):(%d+):([^:]+):([ME]):(.*)$")
-    timestamp = tonumber(timestamp)
+    local timestamp = tonumber(rawTimestamp)
     if entryId ~= messageId or not timestamp then return end
+    local reply
+    reply, encodedMessage = TrialChatCommon.SplitReplyPrefix(encodedMessage)
 
-    return addGroupMessage(session, entrySender, message,
-        emoteFlag == "E", entryId, timestamp, true)
+    return addGroupMessage(session,
+        TrialChatCommon.DecodeMessageMarkup(rawSender),
+        TrialChatCommon.DecodeMessageMarkup(encodedMessage),
+        emoteFlag == "E", entryId, timestamp, true, false, reply)
 end
 
 -- Loading the full history: ask one online member for their history a page
@@ -529,7 +544,7 @@ local function receiveHistoryPageEnd(session, sender, body)
     requestHistoryPage(session)
 end
 
-local function sendGroupMessage(session, message)
+local function sendGroupMessage(session, message, reply)
     message = strtrim(message or "")
     if message == "" then return end
 
@@ -546,23 +561,27 @@ local function sendGroupMessage(session, message)
         showNotice("Group messages are limited to " .. MAX_GROUP_MESSAGE_BYTES .. " bytes.")
         return
     end
+    -- An emote isn't a message, so it never answers one.
+    if isEmote then reply = nil end
     local sender = selfName or UnitName("player")
     session.messageCounter = (session.messageCounter or 0) + 1
     local messageId = makeMessageId(sender, session.messageCounter)
     local timestamp = GetServerTime()
     local messageKind = isEmote and "EMOTE2" or "MSG2"
-    local body = table.concat({
+    local encodedBody = table.concat({
         messageId, tostring(timestamp), isEmote and "E" or "M",
-        TrialChatCommon.AddOwnSongLinkOwner(message),
+        TrialChatCommon.EncodeReplyPrefix(reply)
+            .. TrialChatCommon.EncodeMessageMarkup(
+                TrialChatCommon.AddOwnSongLinkOwner(message)),
     }, ":")
-    local encodedBody = TrialChatCommon.EncodeMessageMarkup(body)
     local payload = GROUP_TAG .. messageKind .. "|" .. session.id .. "|" .. encodedBody
 
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
     local added, entry = addGroupMessage(
-        session, sender, message, isEmote, messageId, timestamp)
+        session, sender, message, isEmote, messageId, timestamp, false, false,
+        reply)
     if #payload <= 255 then
-        sendToMembers(session, messageKind, body)
+        sendToMembers(session, messageKind, encodedBody)
     else
         -- Too long for one addon message: send it in parts the members join.
         local parts = TrialChatCommon.SplitIntoParts(encodedBody, GROUP_PART_BYTES)
@@ -1273,10 +1292,10 @@ function Groups:SetViewedGroup(id)
     end
 end
 
-function Groups:SendMessage(id, message)
+function Groups:SendMessage(id, message, reply)
     local session = activeGroups[id]
     if session then
-        sendGroupMessage(session, message)
+        sendGroupMessage(session, message, reply)
     end
 end
 
@@ -1595,13 +1614,17 @@ eventFrame:SetScript("OnEvent", function(_, event, prefix, message, distribution
 
     if (kind == "MSG2" or kind == "EMOTE2")
         and session and hasMember(session, sender) then
-        local decodedBody = TrialChatCommon.DecodeMessageMarkup(body)
-        local messageId, timestamp, emoteFlag, text =
-            string.match(decodedBody, "^([%x%-]+):(%d+):([ME]):(.*)$")
+        -- Kept encoded: the reply prefix's separators only read as
+        -- separators before decoding.
+        local messageId, timestamp, emoteFlag, encodedText =
+            string.match(body, "^([%x%-]+):(%d+):([ME]):(.*)$")
         timestamp = tonumber(timestamp)
         if messageId and timestamp then
+            local reply
+            reply, encodedText = TrialChatCommon.SplitReplyPrefix(encodedText)
+            local text = TrialChatCommon.DecodeMessageMarkup(encodedText)
             local added, entry = addGroupMessage(session, sender, text,
-                emoteFlag == "E", messageId, timestamp, false, true)
+                emoteFlag == "E", messageId, timestamp, false, true, reply)
             if added and emoteFlag ~= "E" then
                 TrialChatBubbles.ShowMessage(sender, entry.message, session.name)
             end

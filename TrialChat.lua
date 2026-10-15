@@ -185,12 +185,13 @@ local function getGroupMembers()
     return members
 end
 
-local function addNearbyMessage(sender, message, isEmote)
+local function addNearbyMessage(sender, message, isEmote, reply)
     local entry = {
         sender = sender,
         message = message,
         isEmote = isEmote or nil,
         timestamp = GetServerTime(),
+        reply = reply,
     }
     saveChatHistoryEntry(entry)
     if changeHandler then
@@ -200,9 +201,10 @@ local function addNearbyMessage(sender, message, isEmote)
     end
 end
 
-local function printIncomingMessage(label, sender, message, isEmote)
+local function printIncomingMessage(label, sender, message, isEmote, reply)
     local key = normalizeCharacterName(sender) .. "\0" .. message
         .. "\0" .. tostring(isEmote)
+        .. "\0" .. ((reply and reply.sender) or "")
     local now = GetTime()
     local pending = pendingIncomingMessages[key]
     local isGroupMessage = label == "Party" or label == "Raid"
@@ -224,7 +226,8 @@ local function printIncomingMessage(label, sender, message, isEmote)
 
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
-            addNearbyMessage(pending.sender, pending.message, pending.isEmote)
+            addNearbyMessage(pending.sender, pending.message, pending.isEmote,
+                pending.reply)
         end
     elseif recentIncomingMessages[key]
         and now - recentIncomingMessages[key].receivedAt
@@ -247,13 +250,15 @@ local function printIncomingMessage(label, sender, message, isEmote)
         nearby = isNearbyMessage,
         receivedAt = GetTime(),
         isEmote = isEmote,
+        reply = reply,
     }
     pendingIncomingMessages[key] = pending
 
     C_Timer.After(0.2, function()
         if pendingIncomingMessages[key] == pending then
             pendingIncomingMessages[key] = nil
-            addNearbyMessage(pending.sender, pending.message, pending.isEmote)
+            addNearbyMessage(pending.sender, pending.message, pending.isEmote,
+                pending.reply)
         end
     end)
 end
@@ -429,8 +434,13 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
         and EMOTE_TAG or MESSAGE_TAG
     if string.sub(message, 1, #messageTag) ~= messageTag then return end
     local isEmote = messageTag == EMOTE_TAG
-    local chatText = TrialChatCommon.DecodeMessageMarkup(
+    local reply, body
+    reply, body = TrialChatCommon.SplitReplyPrefix(
         string.sub(message, #messageTag + 1))
+    if reply then
+        reply.text = TrialChatCommon.NormalizeMessageMarkup(reply.text)
+    end
+    local chatText = TrialChatCommon.DecodeMessageMarkup(body)
     chatText = TrialChatCommon.NormalizeMessageMarkup(chatText)
     chatText = TrialChatCommon.AddSongLinkOwner(chatText, sender)
     noteActiveListener(sender)
@@ -445,11 +455,11 @@ frame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
     end
 
     if channel == "RAID" then
-        printIncomingMessage("Raid", sender, chatText, isEmote)
+        printIncomingMessage("Raid", sender, chatText, isEmote, reply)
     elseif channel == "PARTY" then
-        printIncomingMessage("Party", sender, chatText, isEmote)
+        printIncomingMessage("Party", sender, chatText, isEmote, reply)
     elseif channel == "WHISPER" then
-        printIncomingMessage("Nearby", sender, chatText, isEmote)
+        printIncomingMessage("Nearby", sender, chatText, isEmote, reply)
     end
 end)
 
@@ -504,7 +514,7 @@ C_Timer.NewTicker(2, function()
     end
 end)
 
-sendTrialChatMessage = function(msg)
+sendTrialChatMessage = function(msg, reply)
     msg = strtrim(msg or "")
     if msg == "" then
         showTrialChatNotice("Enter a message to send with /tc.", true)
@@ -530,8 +540,11 @@ sendTrialChatMessage = function(msg)
             .. MAX_CHAT_MESSAGE_BYTES .. " bytes).", true)
         return
     end
+    -- An emote isn't a message, so it never answers one.
+    if isEmote then reply = nil end
     TrialChatCommon.PerformEmote(emoteToken, emoteTarget)
     local payload = (isEmote and EMOTE_TAG or MESSAGE_TAG)
+        .. TrialChatCommon.EncodeReplyPrefix(reply)
         .. TrialChatCommon.EncodeMessageMarkup(TrialChatCommon.AddOwnSongLinkOwner(msg))
     -- Too long for one addon message: send it in parts the receiver joins.
     local packets = { payload }
@@ -607,7 +620,7 @@ sendTrialChatMessage = function(msg)
         end
     end
 
-    addNearbyMessage(fullPlayerName or playerName, msg, isEmote)
+    addNearbyMessage(fullPlayerName or playerName, msg, isEmote, reply)
     -- With "echo to say" on, normal (non-emote) messages also go out as
     -- regular /say, so nearby players without TrialChat can read them. The
     -- game then draws its own bubble over us, so don't draw a TrialChat one
@@ -641,8 +654,8 @@ function Nearby:GetHistory()
     return getChatHistory()
 end
 
-function Nearby:Send(message)
-    sendTrialChatMessage(message)
+function Nearby:Send(message, reply)
+    sendTrialChatMessage(message, reply)
 end
 
 function Nearby:GetClass(name)
