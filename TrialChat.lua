@@ -795,6 +795,29 @@ SlashCmdList["TRIALCHAT"] = function(msg)
     sendTrialChatMessage(msg)
 end
 
+-- /reload still reloads the UI, but first tells the people around you that a
+-- newer version of the addon is out, so they know to reload too, and echoes
+-- the command itself to /say so everyone nearby sees it, whatever the "echo
+-- to say" setting says. The reload waits a moment so both get away first.
+local RELOAD_EMOTE = "reload"
+local RELOAD_ECHO = "/reload"
+local RELOAD_NOTICE_DELAY = 1
+local blizzardReload = SlashCmdList["RELOAD"]
+
+local function reloadWithNotice()
+    sendTrialChatMessage("/" .. RELOAD_EMOTE)
+    SendChatMessage(RELOAD_ECHO, "SAY")
+    C_Timer.After(RELOAD_NOTICE_DELAY, blizzardReload or ReloadUI)
+end
+
+SlashCmdList["RELOAD"] = function(msg)
+    msg = strtrim(msg or "")
+    if msg ~= "" and blizzardReload then
+        return blizzardReload(msg)
+    end
+    reloadWithNotice()
+end
+
 BINDING_NAME_TRIALCHAT_OPEN = "Open and start typing"
 
 function TrialChat_Open()
