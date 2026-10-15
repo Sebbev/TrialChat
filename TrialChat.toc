@@ -7,6 +7,7 @@
 ## IconTexture: Interface\AddOns\TrialChat\broke
 
 TrialChatCommon.lua
+TrialChatEmoji.lua
 TrialChatEmotes.lua
 TrialChatEmotesTargeted.lua
 TrialChatSoundEmotes.lua
@@ -16,6 +17,7 @@ TrialChatGroups.lua
 TrialChatUI.lua
 TrialChatIconNames.lua
 TrialChatIconPicker.lua
+TrialChatEmojiPicker.lua
 TrialChatGroupDialog.lua
 TrialChatMessages.lua
 TrialChatMinimal.lua

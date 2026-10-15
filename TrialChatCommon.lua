@@ -626,6 +626,26 @@ function TrialChatCommon.FormatMessageText(text)
             result[#result + 1] =
                 string.sub(text, namedColorLinkStart, namedColorLinkEnd)
             position = namedColorLinkEnd + 1
+        elseif string.sub(text, position, position + 1) == "|T" then
+            -- An inline texture: the picture an emoticon shortcut stands for.
+            -- Only textures from our own emoji folder are let through whole;
+            -- any other "|T" a player typed is escaped like before.
+            local marker = TrialChatCommon.EmojiDirectory
+                and ("|T" .. TrialChatCommon.EmojiDirectory) or nil
+            if marker
+                and string.sub(text, position, position + #marker - 1) == marker then
+                local textureEnd = string.find(text, "|t", position + 2, true)
+                if textureEnd then
+                    result[#result + 1] = string.sub(text, position, textureEnd + 1)
+                    position = textureEnd + 2
+                else
+                    result[#result + 1] = "||"
+                    position = position + 1
+                end
+            else
+                result[#result + 1] = "||"
+                position = position + 1
+            end
         else
             local colorEnd = string.sub(text, position, position + 1) == "|c"
                 and position + 9
