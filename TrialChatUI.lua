@@ -762,6 +762,7 @@ local function ensureRow(frame, index, theme)
     local row = frame.rows[index]
     if not row then
         row = CreateFrame("Button", nil, frame)
+        row:RegisterForClicks("LeftButtonUp")
         row.box = UI.CreateBox(row, { radius = 6 })
         row.text = UI.CreateText(row, theme.font or UI.Font.item,
             theme.text or Color.textSoft)

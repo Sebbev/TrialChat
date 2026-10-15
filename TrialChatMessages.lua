@@ -156,9 +156,11 @@ local function createRowParts(row)
     row.reply:SetNonSpaceWrap(true)
     row.reply:Hide()
 
-    -- Right-click opens the message menu, unless a link was clicked.
-    row:RegisterForClicks("RightButtonUp")
-    row:SetScript("OnClick", function(self, button)
+    -- Right-click opens the message menu, unless a link was clicked. A plain
+    -- frame has no RegisterForClicks (that is a Button method), so this
+    -- listens for the button coming up with the mouse over the row.
+    row:EnableMouse(true)
+    row:SetScript("OnMouseUp", function(self, button)
         if button ~= "RightButton" then return end
         if self.hyperlinkMenu or self.hoveredLink then
             self.hyperlinkMenu = nil
