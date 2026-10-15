@@ -370,10 +370,22 @@ local function copyEntryText(entry)
         TrialChatCommon.RemovePlayerLinks(entry.message or ""))
 end
 
+-- Puts the cursor in the message box, so replying starts typing right away.
+local function focusInput()
+    if inMinimalMode() and minimal then
+        minimal:FocusInput()
+    elseif composer.input then
+        composer.input:SetFocus()
+    end
+end
+
 -- theme lets each view open the menu in its own colors.
 showMessageMenu = function(entry, theme)
     UI.ShowPopupMenu(theme or WINDOW_MENU_THEME, {
-        { text = "Reply", onClick = function() setReply(entry) end },
+        { text = "Reply", onClick = function()
+            setReply(entry)
+            focusInput()
+        end },
         { text = "Copy text", onClick = function() copyEntryText(entry) end },
     })
 end

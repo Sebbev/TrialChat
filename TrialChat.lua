@@ -561,7 +561,6 @@ sendTrialChatMessage = function(msg, reply)
         and CLASS_TAG .. playerClass or nil
     local sentToGroup = IsInGroup()
     local inRaid = IsInRaid()
-    local sentWhisperCount = 0
     local groupMembers = getGroupMembers()
 
     if sentToGroup and not inRaid then
@@ -616,7 +615,6 @@ sendTrialChatMessage = function(msg, reply)
             for _, packet in ipairs(packets) do
                 C_ChatInfo.SendAddonMessage(PREFIX, packet, "WHISPER", targetPlayer)
             end
-            sentWhisperCount = sentWhisperCount + 1
         end
     end
 
@@ -633,10 +631,6 @@ sendTrialChatMessage = function(msg, reply)
         else
             TrialChatBubbles.ShowOwnMessage(msg)
         end
-    end
-    if not sentToGroup and sentWhisperCount == 0 then
-        showTrialChatNotice(
-            "But nobody heard that, because there are no players using TrialChat around.")
     end
 end
 

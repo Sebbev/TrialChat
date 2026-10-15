@@ -43,17 +43,21 @@ local function onHyperlinkClick(_, link, text, button)
     TrialChatCommon.HandleHyperlinkClick(link, text, button)
 end
 
--- The quoted part of a reply: who and what, on one muted line.
+-- The quoted part of a reply: who and what, on one muted line. It is drawn
+-- as a link, so clicking it jumps back to the message it quotes.
 local function formatReply(reply, colorFor)
     local sender = TrialChatCommon.ShortName(reply.sender or "?")
     local text = TrialChatCommon.RemovePlayerLinks(reply.text or "")
-    return UI.ColorText(colorFor({ sender = reply.sender }), sender)
-        .. UI.ColorText(Color.muted, ": " .. text)
+    return TrialChatCommon.ReplyLink(
+        UI.ColorText(colorFor({ sender = reply.sender }), sender)
+            .. UI.ColorText(Color.muted, ": " .. text))
 end
 
 local function onHyperlinkEnter(self, link, text)
     GameTooltip:SetOwner(self, "ANCHOR_CURSOR_RIGHT")
-    if string.sub(link or "", 1, 6) == "tcurl:" then
+    if link == TrialChatCommon.REPLY_LINK_NAME then
+        GameTooltip:SetText("Click to jump to the quoted message")
+    elseif string.sub(link or "", 1, 6) == "tcurl:" then
         GameTooltip:SetText("Click to copy URL")
     elseif string.sub(link or "", 1, 7) == "player:"
         or string.sub(link or "", 1, 9) == "tcplayer:" then
@@ -99,6 +103,12 @@ function TrialChatMessageList.EnableLinks(frame)
     frame:SetHyperlinksEnabled(true)
     frame:SetScript("OnHyperlinkClick", function(self, link, text, button)
         if button == "RightButton" then self.hyperlinkMenu = true end
+        if link == TrialChatCommon.REPLY_LINK_NAME then
+            if button ~= "RightButton" and self.onReplyJump then
+                self.onReplyJump(self)
+            end
+            return
+        end
         onHyperlinkClick(self, link, text, button)
     end)
     frame:SetScript("OnHyperlinkEnter", function(self, link, text)
@@ -185,6 +195,7 @@ local function hideRowParts(row)
     row.reply:Hide()
     row.showsTimeOnHover = false
     row.entry = nil
+    row.onReplyJump = nil
 end
 
 -- The text gets the width its row's height was measured for and grows down
@@ -256,6 +267,7 @@ local function initializeRow(list, row, element)
                 - TEXT_LEFT - RIGHT_PADDING - REPLY_INDENT))
             row.reply:SetText(element.replyText)
             row.reply:Show()
+            row.onReplyJump = function() list:JumpToReply(element.entry) end
             top = top - replyHeight - REPLY_GAP
         end
         placeText(row, element, TEXT_LEFT, top)
@@ -405,6 +417,35 @@ function List:ScrollToBottom()
     self.newMessagesButton:Hide()
 end
 
+-- Scrolls to the message a reply quotes, if it is in the loaded history.
+-- entry is the reply-carrying message; the quote is looked for among the
+-- messages before it, newest first, so the nearest one wins.
+function List:JumpToReply(entry)
+    local reply = type(entry) == "table" and entry.reply
+    local entries = self.entries
+    if not reply or not entries or not self.dataProvider then return end
+    local start = #entries + 1
+    for index = #entries, 1, -1 do
+        if entries[index] == entry then
+            start = index
+            break
+        end
+    end
+    for index = start - 1, 1, -1 do
+        local quoted = entries[index]
+        if TrialChatCommon.ReplyQuotesEntry(reply, quoted) then
+            local element = self.rowsByEntry[quoted]
+            local dataIndex = element and self.dataProvider:FindIndex(element)
+            if dataIndex then
+                self.scrollBox:ScrollToElementDataIndex(dataIndex,
+                    ScrollBoxConstants.AlignBegin, 0,
+                    ScrollBoxConstants.NoScrollInterpolation)
+            end
+            return
+        end
+    end
+end
+
 function List:SetDistanceFromBottom(distance)
     local scrollBox = self.scrollBox
     local range = scrollBox:GetDerivedScrollRange()
@@ -529,6 +570,7 @@ end
 -- unreadCount, keepPosition stays where the reader is, and emptyText is
 -- shown while there are no messages.
 function List:SetEntries(entries, options)
+    self.entries = entries
     self.state = {
         format = options.format or function(entry) return entry.message end,
         colorFor = options.colorFor or function() return Color.textSoft end,

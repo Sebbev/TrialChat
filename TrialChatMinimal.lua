@@ -75,12 +75,14 @@ local function colorForName(name)
 end
 
 -- The quoted part of a reply, muted, on a line of its own above the message.
+-- It is drawn as a link, so clicking it jumps back to the message it quotes.
 local function replyLine(reply, colorFor)
     local sender = TrialChatCommon.ShortName(reply.sender or "?")
     local text = TrialChatCommon.RemovePlayerLinks(reply.text or "")
-    return UI.ColorText(Color.muted, "> ")
-        .. UI.ColorText(colorFor({ sender = reply.sender }), sender)
-        .. UI.ColorText(Color.muted, ": " .. text)
+    return TrialChatCommon.ReplyLink(
+        UI.ColorText(Color.muted, "> ")
+            .. UI.ColorText(colorFor({ sender = reply.sender }), sender)
+            .. UI.ColorText(Color.muted, ": " .. text))
 end
 
 -- The keybinding to reply with, when there is one.
@@ -136,7 +138,6 @@ function TrialChatMinimalView.Create(controller)
         tooltip = "Open the full TrialChat window",
         onClick = function() controller.ShowFullView() end,
     })
-    view.fullButton:SetPoint("BOTTOMRIGHT", view.composer, "TOPRIGHT", 0, ROW_GAP)
     view.grip = UI.CreateButton(view.chrome, {
         style = "ghost", icon = "grip", iconSize = 14, width = GRIP_WIDTH, height = PILL_HEIGHT,
         tooltip = "Drag to move",
@@ -144,6 +145,10 @@ function TrialChatMinimalView.Create(controller)
     view.grip:SetPoint("BOTTOMLEFT", view.composer, "TOPLEFT", 0, ROW_GAP)
     view:DragBy(view.grip)
     view:CreateResizer()
+    -- Full view sits at the top right, just left of the resize grabber. It
+    -- rides above the messages so it stays clickable when they fill the area.
+    view.fullButton:SetPoint("TOPRIGHT", view.resizer, "TOPLEFT", -6, 0)
+    view.fullButton:SetFrameLevel(view.chrome:GetFrameLevel() + 10)
     view.newestButton = UI.CreateButton(frame, {
         style = "hud", icon = "arrowDown", iconSize = 12, text = "Newest",
         height = PILL_HEIGHT, radius = 13, font = UI.Font.small,
@@ -209,6 +214,8 @@ function View:CreateResizer()
     self.resizer = resizer
     resizer:SetSize(16, 16)
     resizer:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -3, -3)
+    -- Kept above the messages so it stays grabbable when they fill the area.
+    resizer:SetFrameLevel(self.chrome:GetFrameLevel() + 10)
     resizer:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
     resizer:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
     resizer:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
@@ -339,12 +346,11 @@ function View:CreatePill()
 end
 
 -- Pills for each conversation, in rows from the message box up, leaving
--- room for the Full view button on the first row.
+-- room for the grip on the left of the first row.
 function View:UpdateConversations()
     local selected = self.controller.GetSelected()
     local left = GRIP_WIDTH + 4
     local x, row = left, 0
-    local rowWidth = self.width - self.fullButton:GetWidth() - PILL_GAP
     local count = 0
     -- A pending reply makes room for its own strip above the message box.
     local replyHeight = self.reply and (REPLY_BAR_HEIGHT + ROW_GAP) or 0
@@ -359,8 +365,8 @@ function View:UpdateConversations()
         pill:SetLabel(text)
         UI.SetButtonStyle(pill, conversation.key == selected and "accent" or "hud")
         local width = pill:GetWidth()
-        if x > left and x + width > rowWidth then
-            x, row, rowWidth = left, row + 1, self.width
+        if x > left and x + width > self.width then
+            x, row = left, row + 1
         end
         pill:ClearAllPoints()
         pill:SetPoint("BOTTOMLEFT", self.composer, "TOPLEFT", x,
@@ -549,6 +555,9 @@ function View:LayoutLines()
             break
         end
         chip.line = line
+        local entry = line.entry
+        chip.onReplyJump = (type(entry) == "table" and entry.reply)
+            and function() self:JumpToReply(entry) end or nil
         chip:SetSize(math.max(height, width + 2 * LINE_PADDING_X), height)
         chip:ClearAllPoints()
         chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
@@ -558,6 +567,7 @@ function View:LayoutLines()
     end
     for rank = shown + 1, #self.chips do
         self.chips[rank].line = nil
+        self.chips[rank].onReplyJump = nil
         self.chips[rank]:Hide()
     end
     self:UpdateNewestButton()
@@ -638,6 +648,31 @@ function View:ScrollToNewest()
     self.scroll = 0
     self.newCount = 0
     self:LayoutLines()
+end
+
+-- Scrolls back to the message a reply quotes, when it is among the loaded
+-- lines. entry is the reply-carrying line's message; the nearest quote
+-- before it wins.
+function View:JumpToReply(entry)
+    local reply = type(entry) == "table" and entry.reply
+    if not reply then return end
+    local lines = self.lines
+    local start = #lines + 1
+    for index = #lines, 1, -1 do
+        if lines[index].entry == entry then
+            start = index
+            break
+        end
+    end
+    for index = start - 1, 1, -1 do
+        if TrialChatCommon.ReplyQuotesEntry(reply, lines[index].entry) then
+            self.scroll = #lines - index
+            self.newCount = 0
+            self.lastInteractionAt = GetTime()
+            self:LayoutLines()
+            return
+        end
+    end
 end
 
 -- New lines don't move what you're reading while scrolled back, unless
