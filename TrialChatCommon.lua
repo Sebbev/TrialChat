@@ -824,6 +824,24 @@ local SOUND_EMOTE_DIRECTORY =
 -- is louder but can also clip an already-loud file.
 TrialChatCommon.SoundEmoteChannels = { "Master", "SFX", "Dialog" }
 
+-- Sound emotes never play over each other. On its own the game happily plays
+-- addon sounds on top of whatever is already going, so a new sound emote would
+-- start while an earlier one is still playing (and the earlier one can even be
+-- cut off once the game runs out of sound slots). Instead a sound emote waits
+-- for the one playing to finish and then plays; a few can wait in line, and any
+-- beyond that are dropped.
+--
+-- How long a file plays comes from TrialChatCommon.SoundEmoteDurations (in
+-- TrialChatSoundEmotes.lua); files without an entry use the default below.
+-- The small tail keeps one sound from cutting off the one before it.
+TrialChatCommon.SoundEmoteDefaultDuration = 3.0
+local SOUND_EMOTE_TAIL = 0.15
+local SOUND_EMOTE_MAX_QUEUE = 2
+
+local soundEmoteBusyUntil = 0
+local soundEmoteQueue = {}
+local soundEmoteQueueTimer
+
 function TrialChatCommon.GetSoundEmoteFile(name)
     local files = TrialChatCommon.SoundEmotes
     local file = files and files[name]
@@ -833,11 +851,14 @@ function TrialChatCommon.GetSoundEmoteFile(name)
     return name .. ".mp3"
 end
 
--- Plays a sound emote's audio file. A missing file quietly does not play.
-function TrialChatCommon.PlaySoundEmote(name)
-    if not name or name == "" or not PlaySoundFile then
-        return false
-    end
+local function getSoundEmoteDuration(name)
+    local durations = TrialChatCommon.SoundEmoteDurations
+    local duration = durations and durations[TrialChatCommon.GetSoundEmoteFile(name)]
+    return duration or TrialChatCommon.SoundEmoteDefaultDuration
+end
+
+-- Starts a sound emote right now and reserves the sound until it is over.
+local function startSoundEmote(name)
     local path = SOUND_EMOTE_DIRECTORY .. TrialChatCommon.GetSoundEmoteFile(name)
     local channels = TrialChatCommon.SoundEmoteChannels or { "Master" }
     local played = false
@@ -846,39 +867,128 @@ function TrialChatCommon.PlaySoundEmote(name)
             played = true
         end
     end
+    if played then
+        soundEmoteBusyUntil = GetTime() + getSoundEmoteDuration(name) + SOUND_EMOTE_TAIL
+    end
     return played
+end
+
+local scheduleSoundEmoteQueue
+local function drainSoundEmoteQueue()
+    soundEmoteQueueTimer = nil
+    if soundEmoteBusyUntil > GetTime() then
+        scheduleSoundEmoteQueue()
+        return
+    end
+    local name = table.remove(soundEmoteQueue, 1)
+    if not name then return end
+    startSoundEmote(name)
+    if soundEmoteQueue[1] then
+        scheduleSoundEmoteQueue()
+    end
+end
+
+scheduleSoundEmoteQueue = function()
+    if soundEmoteQueueTimer then return end
+    local delay = soundEmoteBusyUntil - GetTime()
+    if delay < 0 then delay = 0 end
+    soundEmoteQueueTimer = C_Timer.After(delay, drainSoundEmoteQueue)
+end
+
+-- Plays a sound emote's audio file, after any sound emote that is already
+-- playing. A missing file quietly does not play. Returns whether the sound
+-- started now, and whether one was already playing (then this one is waiting
+-- its turn, or was dropped if too many are queued).
+function TrialChatCommon.PlaySoundEmote(name)
+    if not name or name == "" or not PlaySoundFile then
+        return false, false
+    end
+    if soundEmoteBusyUntil > GetTime() then
+        if #soundEmoteQueue < SOUND_EMOTE_MAX_QUEUE then
+            soundEmoteQueue[#soundEmoteQueue + 1] = name
+            scheduleSoundEmoteQueue()
+        end
+        return false, true
+    end
+    return startSoundEmote(name), false
+end
+
+-- Plays a sound emote someone else triggered. Only the name travels over
+-- the wire, so this plays your own copy of the same file; a name you don't
+-- have a file for simply doesn't play. The name comes from another player,
+-- so it is checked before it goes near the file system.
+--
+-- The same trigger can reach you twice (nearby chat and a group both carry
+-- it, and one person can be in both), and one person repeating a sound
+-- within a second is read as the same trigger arriving again rather than a
+-- new one, so nobody hears it twice.
+local SOUND_EMOTE_REPEAT_SECONDS = 1
+local recentReceivedSoundEmotes = {}
+local lastReceivedSoundSweepAt = 0
+
+function TrialChatCommon.PlayReceivedSoundEmote(sender, name)
+    if type(name) ~= "string" or not string.match(name, "^[%w_]+$") then
+        return false
+    end
+
+    local now = GetTime()
+    if now - lastReceivedSoundSweepAt > SOUND_EMOTE_REPEAT_SECONDS then
+        lastReceivedSoundSweepAt = now
+        for key, receivedAt in pairs(recentReceivedSoundEmotes) do
+            if now - receivedAt > SOUND_EMOTE_REPEAT_SECONDS then
+                recentReceivedSoundEmotes[key] = nil
+            end
+        end
+    end
+
+    local key = (TrialChatCommon.NormalizeCharacterName(sender) or "")
+        .. "\0" .. name
+    local receivedAt = recentReceivedSoundEmotes[key]
+    if receivedAt and now - receivedAt <= SOUND_EMOTE_REPEAT_SECONDS then
+        return false
+    end
+    recentReceivedSoundEmotes[key] = now
+
+    return (TrialChatCommon.PlaySoundEmote(name))
 end
 
 -- Handles the "//name [target]" sound emote syntax used instead of "/name".
 -- Returns nil when the message is not a sound emote. Otherwise returns true
 -- plus, for a sound emote that is also a normal emote, the emote message to
 -- send ("/name target"); the second value is nil for a sound-only emote (then
--- only the sound plays). The third value says whether a file actually played.
+-- only the sound plays). The third value says whether the sound started now;
+-- the fourth says whether an earlier sound emote was still playing, so this
+-- one is waiting its turn (or was dropped when too many are waiting). The
+-- fifth is the sound emote's name, for sending it on to the TrialChat
+-- players around you: they play their own copy of the same file, so only the
+-- name needs to travel.
 function TrialChatCommon.ParseSoundEmote(message)
     local name, argument = string.match(message, "^//%s*([%w_]+)%s*(.-)%s*$")
     if not name then
         -- A bare "//" is not a usable sound emote, but consume it so it is
         -- never sent as a literal chat message.
         if string.sub(message, 1, 2) == "//" then
-            return true, nil, false
+            return true, nil, false, false
         end
         return nil
     end
     name = string.lower(name)
 
-    local played = TrialChatCommon.PlaySoundEmote(name)
+    local played, waiting = TrialChatCommon.PlaySoundEmote(name)
 
     -- A sound emote that is also a normal emote sends that emote as well, so
-    -- everyone else sees it. Otherwise only the sound plays, locally.
+    -- everyone else sees it. Either way the sound's name goes out with it
+    -- (see the callers), so everyone else hears it too; the name is the last
+    -- value returned.
     if TrialChatCommon.EmoteDescriptions[name] then
         local emote = "/" .. name
         if argument ~= "" then
             emote = emote .. " " .. argument
         end
-        return true, emote, played
+        return true, emote, played, waiting, name
     end
 
-    return true, nil, played
+    return true, nil, played, waiting, name
 end
 
 function TrialChatCommon.ParseEmote(message)
