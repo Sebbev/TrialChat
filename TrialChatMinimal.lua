@@ -75,12 +75,14 @@ local function colorForName(name)
 end
 
 -- The quoted part of a reply, muted, on a line of its own above the message.
+-- It is drawn as a link, so clicking it jumps back to the message it quotes.
 local function replyLine(reply, colorFor)
     local sender = TrialChatCommon.ShortName(reply.sender or "?")
     local text = TrialChatCommon.RemovePlayerLinks(reply.text or "")
-    return UI.ColorText(Color.muted, "> ")
-        .. UI.ColorText(colorFor({ sender = reply.sender }), sender)
-        .. UI.ColorText(Color.muted, ": " .. text)
+    return TrialChatCommon.ReplyLink(
+        UI.ColorText(Color.muted, "> ")
+            .. UI.ColorText(colorFor({ sender = reply.sender }), sender)
+            .. UI.ColorText(Color.muted, ": " .. text))
 end
 
 -- The keybinding to reply with, when there is one.
@@ -553,6 +555,9 @@ function View:LayoutLines()
             break
         end
         chip.line = line
+        local entry = line.entry
+        chip.onReplyJump = (type(entry) == "table" and entry.reply)
+            and function() self:JumpToReply(entry) end or nil
         chip:SetSize(math.max(height, width + 2 * LINE_PADDING_X), height)
         chip:ClearAllPoints()
         chip:SetPoint("BOTTOMLEFT", self.frame, "BOTTOMLEFT", PADDING, y)
@@ -562,6 +567,7 @@ function View:LayoutLines()
     end
     for rank = shown + 1, #self.chips do
         self.chips[rank].line = nil
+        self.chips[rank].onReplyJump = nil
         self.chips[rank]:Hide()
     end
     self:UpdateNewestButton()
@@ -642,6 +648,31 @@ function View:ScrollToNewest()
     self.scroll = 0
     self.newCount = 0
     self:LayoutLines()
+end
+
+-- Scrolls back to the message a reply quotes, when it is among the loaded
+-- lines. entry is the reply-carrying line's message; the nearest quote
+-- before it wins.
+function View:JumpToReply(entry)
+    local reply = type(entry) == "table" and entry.reply
+    if not reply then return end
+    local lines = self.lines
+    local start = #lines + 1
+    for index = #lines, 1, -1 do
+        if lines[index].entry == entry then
+            start = index
+            break
+        end
+    end
+    for index = start - 1, 1, -1 do
+        if TrialChatCommon.ReplyQuotesEntry(reply, lines[index].entry) then
+            self.scroll = #lines - index
+            self.newCount = 0
+            self.lastInteractionAt = GetTime()
+            self:LayoutLines()
+            return
+        end
+    end
 end
 
 -- New lines don't move what you're reading while scrolled back, unless

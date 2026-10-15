@@ -449,6 +449,43 @@ function TrialChatCommon.SplitReplyPrefix(text)
     }, rest
 end
 
+-- A quoted reply is drawn as a link, so clicking it can jump back to the
+-- message it quotes.
+TrialChatCommon.REPLY_LINK_NAME = "tcreply"
+
+function TrialChatCommon.ReplyLink(text)
+    return "|H" .. TrialChatCommon.REPLY_LINK_NAME .. "|h" .. text .. "|h|r"
+end
+
+-- The visible text of a message or quote: player links are reduced to the
+-- name they show and the edges are trimmed, for comparing the two.
+local function visibleText(text)
+    text = TrialChatCommon.RemovePlayerLinks(text or "")
+    return (string.match(text, "^%s*(.-)%s*$")) or ""
+end
+
+-- Whether a history entry is the message a reply quotes, so clicking the
+-- quoted line can jump back to it. Quotes are trimmed and cut short at
+-- REPLY_QUOTE_LIMIT characters, so a cut quote only matches at its start.
+function TrialChatCommon.ReplyQuotesEntry(reply, entry)
+    if type(entry) ~= "table" or entry.isEmote then return false end
+    if type(reply) ~= "table" or not reply.sender or not entry.sender then
+        return false
+    end
+    if not TrialChatCommon.NamesMatch(entry.sender, reply.sender) then
+        return false
+    end
+    local quote = visibleText(reply.text)
+    if quote == "" then return false end
+    local message = visibleText(entry.message)
+    if message == quote then return true end
+    if string.sub(quote, -3) == "..." then
+        local head = string.sub(quote, 1, -4)
+        return #head > 0 and string.sub(message, 1, #head) == head
+    end
+    return false
+end
+
 -- Messages longer than one addon message (255 bytes) are sent in numbered
 -- parts and put back together by the receiver.
 local MAX_MESSAGE_PARTS = 16
