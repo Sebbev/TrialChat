@@ -136,7 +136,6 @@ function TrialChatMinimalView.Create(controller)
         tooltip = "Open the full TrialChat window",
         onClick = function() controller.ShowFullView() end,
     })
-    view.fullButton:SetPoint("BOTTOMRIGHT", view.composer, "TOPRIGHT", 0, ROW_GAP)
     view.grip = UI.CreateButton(view.chrome, {
         style = "ghost", icon = "grip", iconSize = 14, width = GRIP_WIDTH, height = PILL_HEIGHT,
         tooltip = "Drag to move",
@@ -144,6 +143,10 @@ function TrialChatMinimalView.Create(controller)
     view.grip:SetPoint("BOTTOMLEFT", view.composer, "TOPLEFT", 0, ROW_GAP)
     view:DragBy(view.grip)
     view:CreateResizer()
+    -- Full view sits at the top right, just left of the resize grabber. It
+    -- rides above the messages so it stays clickable when they fill the area.
+    view.fullButton:SetPoint("TOPRIGHT", view.resizer, "TOPLEFT", -6, 0)
+    view.fullButton:SetFrameLevel(view.chrome:GetFrameLevel() + 10)
     view.newestButton = UI.CreateButton(frame, {
         style = "hud", icon = "arrowDown", iconSize = 12, text = "Newest",
         height = PILL_HEIGHT, radius = 13, font = UI.Font.small,
@@ -209,6 +212,8 @@ function View:CreateResizer()
     self.resizer = resizer
     resizer:SetSize(16, 16)
     resizer:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", -3, -3)
+    -- Kept above the messages so it stays grabbable when they fill the area.
+    resizer:SetFrameLevel(self.chrome:GetFrameLevel() + 10)
     resizer:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
     resizer:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
     resizer:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
@@ -339,12 +344,11 @@ function View:CreatePill()
 end
 
 -- Pills for each conversation, in rows from the message box up, leaving
--- room for the Full view button on the first row.
+-- room for the grip on the left of the first row.
 function View:UpdateConversations()
     local selected = self.controller.GetSelected()
     local left = GRIP_WIDTH + 4
     local x, row = left, 0
-    local rowWidth = self.width - self.fullButton:GetWidth() - PILL_GAP
     local count = 0
     -- A pending reply makes room for its own strip above the message box.
     local replyHeight = self.reply and (REPLY_BAR_HEIGHT + ROW_GAP) or 0
@@ -359,8 +363,8 @@ function View:UpdateConversations()
         pill:SetLabel(text)
         UI.SetButtonStyle(pill, conversation.key == selected and "accent" or "hud")
         local width = pill:GetWidth()
-        if x > left and x + width > rowWidth then
-            x, row, rowWidth = left, row + 1, self.width
+        if x > left and x + width > self.width then
+            x, row = left, row + 1
         end
         pill:ClearAllPoints()
         pill:SetPoint("BOTTOMLEFT", self.composer, "TOPLEFT", x,
